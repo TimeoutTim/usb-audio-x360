@@ -58,6 +58,14 @@ after the first successful audio transfer and when the device disconnects.
 
 4. Reboot with a compatible USB audio device attached.
 
+## Volume control
+
+Hold **Back** on any connected controller and tap **D-pad Up** or
+**D-pad Down** to change USB audio volume in 5% steps. The software volume
+ranges from 0% to 100% and resets to 100% when the console restarts. A short
+audio cue plays at the new level after each change, providing audible feedback
+without leaving a long-lived notification on screen.
+
 ## Warning
 
 Best effort has been made to ensure this plugin fails gracefully; however,

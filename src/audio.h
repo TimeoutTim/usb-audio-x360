@@ -26,3 +26,4 @@ BOOL AudioInitialize(const AudioHostApi* api);
 VOID AudioTick(const AudioHostApi* api);
 VOID AudioDeviceRemoved();
 VOID AudioNotificationTick();
+BOOL AudioAdjustVolume(LONG delta_percent);

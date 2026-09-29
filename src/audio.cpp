@@ -17,7 +17,17 @@ const int kBatchBytes = kPacketBytes * kIsochPacketCount;
 const int kPcmRingFrames = 4096;
 const int kPcmTargetFrames = 768;
 const int kPcmHighWaterFrames = 1280;
+const int kVolumeFeedbackSamples = 1440;
 const DWORD kNotifyTypeCustom = 80;
+
+const SHORT kVolumeFeedbackWave[48] = {
+     0,  157,  311,  459,  600,  731,  849,  952,
+  1039, 1109, 1159, 1190, 1200, 1190, 1159, 1109,
+  1039,  952,  849,  731,  600,  459,  311,  157,
+     0, -157, -311, -459, -600, -731, -849, -952,
+ -1039,-1109,-1159,-1190,-1200,-1190,-1159,-1109,
+ -1039, -952, -849, -731, -600, -459, -311, -157
+};
 
 enum NotificationEvent {
   kNotificationNone = 0,
@@ -91,6 +101,8 @@ static volatile LONG g_stopping = 0;
 static volatile LONG g_bridge_started = 0;
 static volatile LONG g_notification_event = kNotificationNone;
 static volatile LONG g_notification_shown = 0;
+static volatile LONG g_volume_percent = 100;
+static volatile LONG g_volume_feedback_pending = 0;
 static volatile LONG g_isoch_slot_busy[kIsochRingDepth];
 static volatile LONG g_pcm_write = 0;
 static volatile LONG g_pcm_read = 0;
@@ -106,6 +118,8 @@ static RenderCaptureBuffer g_render_frame;
 static void* volatile g_mec_handle = 0;
 static CaptureRenderFrameFn g_capture_render_frame = 0;
 static NotifyQueueUiFn g_notify_queue_ui = 0;
+static LONG g_volume_feedback_remaining = 0;
+static LONG g_volume_feedback_phase = 0;
 
 static WORD Swap16(WORD value) {
   return (WORD)((value >> 8) | (value << 8));
@@ -139,10 +153,29 @@ static void __cdecl RenderCaptureCallback(void*) {
   LONG write = g_pcm_write;
   LONG read = g_pcm_read;
   if ((DWORD)(write - read) > kPcmRingFrames - 256) return;
+  float gain = (float)g_volume_percent / 100.0f;
+  if (InterlockedExchange(&g_volume_feedback_pending, 0)) {
+    g_volume_feedback_remaining = kVolumeFeedbackSamples;
+    g_volume_feedback_phase = 0;
+  }
 
   for (int sample = 0; sample < 256; ++sample) {
-    float left = g_render_frame.samples[sample];
-    float right = g_render_frame.samples[256 + sample];
+    float left = g_render_frame.samples[sample] * gain;
+    float right = g_render_frame.samples[256 + sample] * gain;
+    if (g_volume_feedback_remaining > 0) {
+      LONG elapsed = kVolumeFeedbackSamples - g_volume_feedback_remaining;
+      float envelope = 1.0f;
+      if (elapsed < 96) envelope = (float)elapsed / 96.0f;
+      if (g_volume_feedback_remaining < 240)
+        envelope = (float)g_volume_feedback_remaining / 240.0f;
+      float feedback =
+          ((float)kVolumeFeedbackWave[g_volume_feedback_phase] * 4.0f /
+           32767.0f) * gain * envelope;
+      left += feedback;
+      right += feedback;
+      g_volume_feedback_phase = (g_volume_feedback_phase + 1) % 48;
+      --g_volume_feedback_remaining;
+    }
     if (left > 1.0f) left = 1.0f;
     if (left < -1.0f) left = -1.0f;
     if (right > 1.0f) right = 1.0f;
@@ -372,4 +405,24 @@ VOID AudioNotificationTick() {
   }
   if (event == kNotificationConnected)
     InterlockedExchange(&g_notification_shown, 1);
+}
+
+BOOL AudioAdjustVolume(LONG delta_percent) {
+  if (!g_streaming || g_stopping || !g_api || !g_api->playback_handle)
+    return FALSE;
+
+  LONG current = g_volume_percent;
+  for (;;) {
+    LONG next = current + delta_percent;
+    if (next < 0) next = 0;
+    if (next > 100) next = 100;
+    if (next == current) return FALSE;
+    LONG observed = InterlockedCompareExchange(&g_volume_percent,
+                                               next, current);
+    if (observed == current) {
+      InterlockedExchange(&g_volume_feedback_pending, 1);
+      return TRUE;
+    }
+    current = observed;
+  }
 }
