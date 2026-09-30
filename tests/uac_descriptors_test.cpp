@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "uac_descriptors.h"
+#include "playback_profile.h"
 #include <assert.h>
 #include <stdio.h>
 #include <vector>
@@ -61,6 +62,43 @@ static size_t Parse(const Bytes& b, uac::Format* f, size_t cap = 8) {
   return count;
 }
 
+static Bytes SpaceTouch() {
+  Bytes b;
+  APPEND(b, 9,2,0x1b,1,4,1,0,0x80,50);
+  APPEND(b, 9,4,0,0,0,1,1,0,0);
+  APPEND(b, 10,0x24,1,0,1,0x48,0,2,1,2);
+  APPEND(b, 12,0x24,2,0x1e,1,2,0,2,3,0,0,0);
+  APPEND(b, 10,0x24,6,0x0e,0x1e,1,2,2,2,0);
+  APPEND(b, 9,0x24,3,2,1,1,0,0x0e,0);
+  APPEND(b, 12,0x24,2,3,1,1,0,2,3,0,0,0);
+  APPEND(b, 10,0x24,6,0x0a,3,1,3,0,0,0);
+  APPEND(b, 9,0x24,3,4,1,3,0,0x0a,0);
+  APPEND(b, 9,4,1,0,0,1,2,0,0);
+  APPEND(b, 9,4,1,1,1,1,2,0,0);
+  APPEND(b, 7,0x24,1,2,1,1,0);
+  APPEND(b, 14,0x24,2,1,2,2,16,2,0x44,0xac,0,0x80,0xbb,0);
+  APPEND(b, 9,5,0x83,5,0xc0,0,1,0,0);
+  APPEND(b, 7,0x25,1,1,0,0,0);
+  APPEND(b, 9,4,2,0,0,1,2,0,0);
+  APPEND(b, 9,4,2,1,1,1,2,0,0);
+  APPEND(b, 7,0x24,1,3,1,1,0);
+  APPEND(b, 20,0x24,2,1,2,2,16,3,0x44,0xac,0,0x80,0xbb,0,
+         0,0x77,1,0,0,0);
+  APPEND(b, 9,5,2,9,0x58,2,1,0,0);
+  APPEND(b, 7,0x25,1,1,2,8,0);
+  APPEND(b, 9,4,2,2,1,1,2,0,0);
+  APPEND(b, 7,0x24,1,3,1,1,0);
+  APPEND(b, 20,0x24,2,1,2,3,24,3,0x44,0xac,0,0x80,0xbb,0,
+         0,0x77,1,0,0,0);
+  APPEND(b, 9,5,2,9,0x58,2,1,0,0);
+  APPEND(b, 7,0x25,1,1,2,8,0);
+  APPEND(b, 9,4,3,0,1,3,0,0,0);
+  APPEND(b, 9,0x21,0x11,1,0,1,0x22,0x4a,0);
+  APPEND(b, 7,5,0x85,3,0x40,0,8);
+  Finish(b);
+  return b;
+}
+
 int main() {
   uac::Format formats[8];
   Bytes v1 = Header(false);
@@ -71,6 +109,36 @@ int main() {
   assert(formats[0].data.address == 3 && formats[0].data.max_packet_bytes == 200);
   assert(formats[0].supports_48000 && formats[0].endpoint_rate_control);
   assert(formats[0].sample_bytes == 2 && formats[0].valid_bits == 16);
+
+  // SPACETOUCH 0666:0880 shares a 600-byte endpoint capacity between
+  // 48/96 kHz and 16/24-bit alternates. Capacity above our generated packet
+  // size is valid and must not be mistaken for a required transfer length.
+  Bytes space_touch = SpaceTouch();
+  assert(space_touch.size() == 0x11b);
+  assert(Parse(space_touch, formats) == 2);
+  assert(formats[0].interface_number == 2 && formats[0].alternate == 1);
+  assert(formats[0].sample_bytes == 2 && formats[0].valid_bits == 16);
+  assert(formats[0].sync == uac::kAdaptive && !formats[0].feedback.address);
+  assert(formats[0].data.address == 2 &&
+         formats[0].data.max_packet_bytes == 600);
+  assert(formats[0].endpoint_rate_control && formats[0].supports_48000);
+  assert(uac::SupportedFullSpeedPlayback(formats[0]));
+  assert(formats[1].alternate == 2 && formats[1].sample_bytes == 3);
+  assert(uac::SupportedFullSpeedPlayback(formats[1]));
+  size_t selected = 99;
+  // Interface 1 is capture-only; a claim there must fall back to playback 2.
+  assert(uac::SelectFullSpeedPlayback(formats, 2, 1, &selected));
+  assert(selected == 0 && formats[selected].interface_number == 2);
+  selected = 99;
+  assert(uac::SelectFullSpeedPlayback(formats, 2, 2, &selected));
+  assert(selected == 0);  // Prefer 16-bit alternate 1 over alternate 2.
+  assert(!uac::SelectFullSpeedPlayback(0, 1, 2, &selected));
+  assert(!uac::SelectFullSpeedPlayback(formats, 2, 2, 0));
+  uac::Format capacity = formats[0];
+  capacity.data.max_packet_bytes = 191;
+  assert(!uac::SupportedFullSpeedPlayback(capacity));
+  capacity.data.max_packet_bytes = 1024;
+  assert(!uac::SupportedFullSpeedPlayback(capacity));
 
   // Continuous UAC1 rate range, followed by a range excluding 48 kHz.
   Bytes continuous = v1;

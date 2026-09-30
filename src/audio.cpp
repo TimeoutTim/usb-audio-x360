@@ -8,6 +8,7 @@
 #include "test_tone.h"
 #include "pcm_packet.h"
 #include "playback_pacer.h"
+#include "playback_profile.h"
 #include "uac_clock.h"
 #include "uac_descriptors.h"
 
@@ -496,16 +497,11 @@ static bool SelectProfile(DWORD received) {
     return false;
   if (uac::Discover(g_configuration_descriptor, received, formats, 16,
                     &count) != uac::kOk) return false;
-  for (size_t i = 0; i < count; ++i) {
-    const uac::Format& f = formats[i];
-    unsigned minimum = (f.sync == uac::kAsynchronous ? 49 : 48) *
-                       f.channels * f.sample_bytes;
-    if (f.interface_number != g_profile.interface_number ||
-        f.data.interval != 1 || f.data.transactions != 1 ||
-        f.data.max_packet_bytes < minimum ||
-        f.data.max_packet_bytes > kMaxPacketBytes ||
-        (f.feedback.address && (f.feedback.interval != 1 ||
-                               f.feedback.transactions != 1))) continue;
+  size_t selected = 0;
+  if (!uac::SelectFullSpeedPlayback(
+          formats, count, g_profile.interface_number, &selected)) return false;
+  {
+    const uac::Format& f = formats[selected];
     g_format = f;
     memset(&g_profile, 0, sizeof(g_profile));
     g_profile.configuration = f.configuration;
@@ -1109,7 +1105,21 @@ static void SetupTick() {
     InterlockedExchange(&g_control_done, 0);
     UsbAudioDiagnostic[35] = status;
     UsbAudioDiagnostic[36] = received;
-    if (status != 0) { SetupFailed(status); return; }
+    if (status != 0) {
+      // Some otherwise conforming UAC1 devices accept SET_INTERFACE but stall
+      // the standard GET_INTERFACE readback. The active SET already completed
+      // successfully before this request was issued, so continue without
+      // readback only for UAC1. UAC2 retains strict interface/clock checks.
+      if (g_setup_stage == kVerifyInterface &&
+          g_profile.audio_class_version == 1) {
+        UsbAudioActivationDiagnostic[1] = 2;  // Active, readback unsupported.
+        UsbAudioActivationDiagnostic[2] = g_profile.alternate_setting;
+        ActivationVerified();
+        return;
+      }
+      SetupFailed(status);
+      return;
+    }
     if (g_setup_stage != kClock && received != g_control.trb.length) {
       SetupFailed(0xe001); return;
     }
@@ -1356,7 +1366,7 @@ static void DebugInitialize() {
 }  // namespace
 
 BOOL AudioInitialize(const AudioHostApi* api) {
-  UsbAudioDiagnostic[63] = 0x55414344;  // UAC1/UAC2 playback with safe reattach.
+  UsbAudioDiagnostic[63] = 0x55414346;  // Composite UAC1 compatibility.
 #if USB_AUDIO360_DEBUG_API
   UsbAudioDiagnostic[63] = 0x55414342;
 #endif

@@ -6,8 +6,9 @@ below are chronological history, not all descriptions of the current build.
 
 ## Continuous UAC1/UAC2 integration
 
-Production marker `0x55414344` selects continuous captured-system-PCM output
-with physical-removal reattachment;
+Production marker `0x55414346` selects continuous captured-system-PCM output,
+capture-first composite playback selection, UAC1 interface-readback fallback,
+and physical-removal reattachment;
 debug marker `0x55414342` retains the remotely commanded bounded stage-5
 harness. Both use the same descriptor discovery, UAC2 clock graph, activation
 readbacks, PCM writer and Xbox transport adapter.
@@ -46,7 +47,10 @@ Portable tests now include continuous fixed/feedback pacing as well as the
 descriptor-to-clock-to-PCM pipeline. XDK release/debug builds succeed. Apple
 AirPods Max USB Audio (`05ac:110c`) has passed audible generated-tone and
 continuous captured Xbox system-audio validation through this setup, format,
-and feedback stack.
+and feedback stack. SPACETOUCH USB Audio (`0666:0880`) has passed continuous
+UAC1 playback with a capture-first composite layout, playback interface 2,
+600-byte advertised endpoint capacity, and a device-stalled optional
+GET_INTERFACE readback after successful activation.
 
 See the [Xbox transport contract audit](xbox-usb-transport-contract.md) before
 expanding transport support. Completion-driven refill is integrated and has
