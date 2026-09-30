@@ -39,7 +39,6 @@ wine_env=(
   WINEPREFIX="$wine_prefix"
   WINEARCH=win64
   WINEDEBUG=-all
-  WINEDLLOVERRIDES=mscoree,mshtml=
 )
 
 cleanup_wine() {
@@ -60,6 +59,9 @@ if [[ ! -f "$wine_prefix_ready" ]]; then
     WINEPREFIX="$initializing_prefix"
     WINEARCH=win64
     WINEDEBUG=-all
+    # Suppress Wine's invisible first-run Mono and Gecko installer prompts.
+    # This must only apply during prefix creation: the XDK C++ backend imports
+    # native helper functions from Wine's built-in mscoree.dll.
     WINEDLLOVERRIDES=mscoree,mshtml=
   )
 
