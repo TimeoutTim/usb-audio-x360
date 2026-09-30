@@ -6,9 +6,9 @@ below are chronological history, not all descriptions of the current build.
 
 ## Continuous UAC1/UAC2 integration
 
-Production marker `0x55414346` selects continuous captured-system-PCM output,
-capture-first composite playback selection, UAC1 interface-readback fallback,
-and physical-removal reattachment;
+Production marker `0x55414348` selects continuous captured-system-PCM output,
+capture-first composite playback selection, fixed-rate UAC1 `SYNC_NONE`, UAC1
+interface-readback fallback, and physical-removal reattachment;
 debug marker `0x55414342` retains the remotely commanded bounded stage-5
 harness. Both use the same descriptor discovery, UAC2 clock graph, activation
 readbacks, PCM writer and Xbox transport adapter.

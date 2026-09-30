@@ -106,8 +106,8 @@ bool Candidate(const Byte* b, size_t total, size_t begin, size_t end,
   f->version = iface[7] == 0x20 ? 2 : 1;
   bool general = false, format = false, pcm = false;
   unsigned data_count = 0, feedback_count = 0, endpoint_count = 0;
+  unsigned class_endpoint_count = 0;
   Byte sync_address = 0;
-  bool last_data = false;
   for (size_t o = begin + iface[0]; o < end; o += b[o]) {
     const Byte* p = b + o;
     if (p[1] == 0x24 && p[0] >= 3 && p[2] == 1) {
@@ -141,20 +141,23 @@ bool Candidate(const Byte* b, size_t total, size_t begin, size_t end,
         f->sample_bytes = p[4]; f->valid_bits = p[5];
       }
     } else if (p[1] == 5) {
-      ++endpoint_count; last_data = false;
+      ++endpoint_count;
       if ((p[3] & 3) != 1) return false;
       unsigned usage = (p[3] >> 4) & 3;
       if (!(p[2] & 0x80) && usage == 0) {
         if (++data_count != 1 || !ReadEndpoint(p, &f->data)) return false;
         f->sync = static_cast<Sync>((p[3] >> 2) & 3);
         if (f->version == 1 && p[0] >= 9) sync_address = p[8];
-        last_data = true;
       } else if ((p[2] & 0x80) &&
                  (usage == 1 || (f->version == 1 && usage == 0))) {
         if (++feedback_count != 1 || !ReadEndpoint(p, &f->feedback)) return false;
       } else return false;  // Capture/implicit feedback is not this MVP.
-    } else if (p[1] == 0x25 && last_data && f->version == 1) {
-      if (p[0] < 7 || p[2] != 1) return false;
+    } else if (p[1] == 0x25 && f->version == 1) {
+      // A few UAC1 firmwares place the class-specific endpoint descriptor
+      // before the standard endpoint descriptor. There is only one data
+      // endpoint descriptor per supported alternate, so retain its controls
+      // independent of that noncanonical ordering.
+      if (p[0] < 7 || p[2] != 1 || ++class_endpoint_count != 1) return false;
       f->endpoint_rate_control = (p[3] & 1) != 0;
     }
   }
@@ -162,7 +165,8 @@ bool Candidate(const Byte* b, size_t total, size_t begin, size_t end,
       endpoint_count != iface[4] || f->channels != 2 ||
       f->sample_bytes < 2 || f->sample_bytes > 4 ||
       !f->valid_bits || f->valid_bits > f->sample_bytes * 8 ||
-      f->sync == kNoSync || (f->rate_48000_known && !f->supports_48000))
+      (f->sync == kNoSync && f->version != 1) ||
+      (f->rate_48000_known && !f->supports_48000))
     return false;
   if (f->sync == kAsynchronous) {
     if (!feedback_count || (sync_address && sync_address != f->feedback.address) ||

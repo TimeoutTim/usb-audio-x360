@@ -23,6 +23,7 @@ without rebooting. See [test scope and procedure](docs/uac-core.md).
 | SABRENT AU-MMSA USB External Stereo Sound Adapter | UAC1 | `0d8c:0014` | USB-A | Continuous Xbox system audio |
 | Apple AirPods Max USB Audio | UAC2 | `05ac:110c` | USB-A-to-USB-C cable | Continuous Xbox system audio |
 | [SPACETOUCH USB Audio](https://www.amazon.com.au/dp/B0GT9K55KX?ref=ppx_yo2ov_dt_b_fed_asin_title) | UAC1 | `0666:0880` | USB-A | Continuous Xbox system audio |
+| Sennheiser MOMENTUM 3 Wireless | UAC1 | `1377:6004` | USB-A-to-USB-C cable | Continuous Xbox system audio |
 
 Compatibility is selected from USB Audio descriptors rather than these device
 identifiers. The list records hardware that has been tested successfully; it
@@ -36,14 +37,17 @@ descriptor and transport policy supports:
 - descriptor-selected configurations, interfaces, alternates, and endpoints;
 - full-speed isochronous playback with a 1 ms interval and one transaction;
 - endpoint capacities up to the USB full-speed limit of 1023 bytes;
-- adaptive/synchronous playback or asynchronous playback with explicit
-  feedback; and
+- UAC1 fixed-rate `SYNC_NONE`, adaptive/synchronous playback, or asynchronous
+  playback with explicit feedback; and
 - UAC1 endpoint sample-frequency control and UAC2 clock-entity control.
 
 The SPACETOUCH validates a capture-first composite layout whose playback
 interface advertises a shared 600-byte capacity for its 48/96 kHz and
 16/24-bit alternates. The driver selects its 48 kHz/16-bit alternate and sends
 192-byte packets; it does not infer packet length from advertised capacity.
+The MOMENTUM 3 validates UAC1 interface-first endpoint-rate setup and tolerant
+handling of a class-specific endpoint descriptor that appears before its
+standard endpoint descriptor.
 
 This is homebrew software for a modified (for example, RGH, JTAG, or
 BadAvatar) Xbox 360 console. It is not compatible with an unmodified retail

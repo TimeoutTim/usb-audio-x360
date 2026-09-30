@@ -11,6 +11,7 @@
 #include "playback_profile.h"
 #include "uac_clock.h"
 #include "uac_descriptors.h"
+#include "uac_setup_policy.h"
 
 #include <string.h>
 #if USB_AUDIO360_DEBUG_API
@@ -1031,6 +1032,11 @@ static void ActivateInterface() {
 #endif
 }
 
+static void VerifyInterface() {
+  QueueControl(0x81, 10, 0, g_profile.interface_number, 1,
+               g_control_data, kVerifyInterface);
+}
+
 static void ReadVolumeOrActivate() {
   if (g_read_feature_id && uac::ControlReadable(g_read_feature_controls, 2))
     QueueControl(0xa1, 1, 0x0200,
@@ -1142,15 +1148,15 @@ static void SetupTick() {
         QueueControl(1, 11, 0, g_profile.interface_number, 0, 0, kInactive);
         break;
       case kInactive:
-        if (g_profile.audio_class_version == 2) {
+        if (uac::ActionAfterInactive(g_profile.audio_class_version) ==
+            uac::kBeginClockSetup) {
           g_setup_stage = kClock;
           g_clock.Begin(g_configuration_descriptor,
               Read16(g_configuration_descriptor + 2), g_profile.control_interface_number,
               g_profile.clock_source_id, GetTickCount());
-        } else if (g_format.endpoint_rate_control)
-          QueueControl(0x22, 1, 0x0100, g_profile.endpoint_address, 3,
-                       g_sample_rate, kUac1Rate);
-        else ActivateInterface();
+        } else {
+          ActivateInterface();
+        }
         break;
       case kClock:
         if (g_clock_request.request_type == 0xa1 &&
@@ -1159,7 +1165,7 @@ static void SetupTick() {
         g_clock.Complete(g_clock_request.token, true, g_control_data,
                          received, GetTickCount());
         break;
-      case kUac1Rate: ActivateInterface(); break;
+      case kUac1Rate: VerifyInterface(); break;
       case kUnmute: ReadMuteOrVolume(); break;
       case kReadMute:
         UsbAudioToneDiagnostic[3] = g_control_data[0];
@@ -1173,8 +1179,12 @@ static void SetupTick() {
         break;
       case kActive:
         UsbAudioDiagnostic[55] = 2;  // SET_INTERFACE completed successfully.
-        QueueControl(0x81, 10, 0, g_profile.interface_number, 1,
-                     g_control_data, kVerifyInterface);
+        if (uac::ActionAfterActive(g_profile.audio_class_version,
+                                   g_format.endpoint_rate_control) ==
+            uac::kProgramEndpointRate)
+          QueueControl(0x22, 1, 0x0100, g_profile.endpoint_address, 3,
+                       g_sample_rate, kUac1Rate);
+        else VerifyInterface();
         break;
       case kVerifyInterface:
         UsbAudioActivationDiagnostic[1] = 1;
@@ -1366,7 +1376,7 @@ static void DebugInitialize() {
 }  // namespace
 
 BOOL AudioInitialize(const AudioHostApi* api) {
-  UsbAudioDiagnostic[63] = 0x55414346;  // Composite UAC1 compatibility.
+  UsbAudioDiagnostic[63] = 0x55414348;  // UAC1 interface-first rate setup.
 #if USB_AUDIO360_DEBUG_API
   UsbAudioDiagnostic[63] = 0x55414342;
 #endif

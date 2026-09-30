@@ -99,6 +99,27 @@ static Bytes SpaceTouch() {
   return b;
 }
 
+static Bytes Momentum3() {
+  Bytes b;
+  APPEND(b, 9,2,0x8a,0,3,1,0,0xc0,0xfa);
+  APPEND(b, 9,4,0,0,0,1,1,0,0);
+  APPEND(b, 9,0x24,1,0,1,0x2b,0,1,1);
+  APPEND(b, 12,0x24,2,4,1,1,5,2,3,0,0,0);
+  APPEND(b, 9,0x24,3,5,2,3,4,6,0);
+  APPEND(b, 13,0x24,6,6,4,2,2,0,0,0,0,0,0);
+  APPEND(b, 9,4,1,0,0,1,2,0,0);
+  APPEND(b, 9,4,1,1,1,1,2,0,0);
+  APPEND(b, 7,0x24,1,4,0,1,0);
+  APPEND(b, 11,0x24,2,1,2,2,16,1,0x80,0xbb,0);
+  APPEND(b, 7,0x25,1,0x81,2,0,0);  // Deliberately before endpoint.
+  APPEND(b, 9,5,3,1,0xc0,0,1,0,0); // Isochronous OUT, SYNC_NONE.
+  APPEND(b, 9,4,2,0,1,3,0,0,0);
+  APPEND(b, 9,0x21,0x11,1,0,1,0x22,0x55,0);
+  APPEND(b, 7,5,0x81,3,0x40,0,1);
+  Finish(b);
+  return b;
+}
+
 int main() {
   uac::Format formats[8];
   Bytes v1 = Header(false);
@@ -139,6 +160,19 @@ int main() {
   assert(!uac::SupportedFullSpeedPlayback(capacity));
   capacity.data.max_packet_bytes = 1024;
   assert(!uac::SupportedFullSpeedPlayback(capacity));
+
+  // Sennheiser Momentum 3 1377:6004 advertises the Linux-supported fallback
+  // profile: fixed 48 kHz playback using SYNC_NONE with no feedback endpoint.
+  // Its firmware also reverses the standard/class endpoint descriptor order.
+  Bytes momentum = Momentum3();
+  assert(momentum.size() == 0x8a);
+  assert(Parse(momentum, formats) == 1);
+  assert(formats[0].interface_number == 1 && formats[0].alternate == 1);
+  assert(formats[0].data.address == 3 &&
+         formats[0].data.max_packet_bytes == 192);
+  assert(formats[0].sync == uac::kNoSync && !formats[0].feedback.address);
+  assert(formats[0].endpoint_rate_control && formats[0].supports_48000);
+  assert(uac::SupportedFullSpeedPlayback(formats[0]));
 
   // Continuous UAC1 rate range, followed by a range excluding 48 kHz.
   Bytes continuous = v1;
