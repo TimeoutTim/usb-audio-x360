@@ -11,6 +11,7 @@ runtime_root=${USB_AUDIO360_RUNTIME:-/tmp/usb-audio360-build}
 xdk_payload="$runtime_root/xdk-21256.3"
 xdk="$xdk_payload/XDK"
 wine_prefix="$runtime_root/wine"
+wine_prefix_ready="$wine_prefix/.usb-audio360-ready"
 build_dir="$runtime_root/build"
 output_dir="$project_root/bin"
 debug_api=${USB_AUDIO360_DEBUG_API:-0}
@@ -33,8 +34,59 @@ if [[ ! -f "$xextool" ]]; then
   exit 1
 fi
 
-if [[ ! -d "$wine_prefix/drive_c" ]]; then
-  env WINEPREFIX="$wine_prefix" WINEDEBUG=-all wineboot -u
+wine_env=(
+  env
+  WINEPREFIX="$wine_prefix"
+  WINEARCH=win64
+  WINEDEBUG=-all
+  WINEDLLOVERRIDES=mscoree,mshtml=
+)
+
+cleanup_wine() {
+  timeout --kill-after=2s 10s \
+    "${wine_env[@]}" wineserver -k >/dev/null 2>&1 || true
+  timeout --kill-after=2s 10s \
+    "${wine_env[@]}" wineserver -w >/dev/null 2>&1 || true
+}
+trap cleanup_wine EXIT
+
+if [[ ! -f "$wine_prefix_ready" ]]; then
+  initializing_prefix="$runtime_root/wine-initializing.$$"
+  rm -rf -- "$initializing_prefix"
+  mkdir -p "$initializing_prefix"
+
+  initializing_wine_env=(
+    env
+    WINEPREFIX="$initializing_prefix"
+    WINEARCH=win64
+    WINEDEBUG=-all
+    WINEDLLOVERRIDES=mscoree,mshtml=
+  )
+
+  if ! timeout --kill-after=5s 180s \
+      "${initializing_wine_env[@]}" wineboot --init; then
+    timeout --kill-after=2s 10s \
+      "${initializing_wine_env[@]}" wineserver -k >/dev/null 2>&1 || true
+    rm -rf -- "$initializing_prefix"
+    echo "Wine prefix initialization failed" >&2
+    exit 1
+  fi
+  if ! timeout --kill-after=5s 30s \
+      "${initializing_wine_env[@]}" wine cmd /c ver >/dev/null; then
+    timeout --kill-after=2s 10s \
+      "${initializing_wine_env[@]}" wineserver -k >/dev/null 2>&1 || true
+    rm -rf -- "$initializing_prefix"
+    echo "Wine prefix validation failed" >&2
+    exit 1
+  fi
+
+  timeout --kill-after=2s 10s \
+    "${initializing_wine_env[@]}" wineserver -k >/dev/null 2>&1 || true
+  timeout --kill-after=2s 10s \
+    "${initializing_wine_env[@]}" wineserver -w >/dev/null 2>&1 || true
+  touch "$initializing_prefix/.usb-audio360-ready"
+  rm -rf -- "$wine_prefix"
+  mv "$initializing_prefix" "$wine_prefix"
 fi
 
 rm -f "$build_dir"/*.obj "$build_dir"/*.pe "$build_dir"/*.xex \
@@ -65,10 +117,8 @@ cp "$project_root/src/detour.cpp" "$build_dir/detour.cpp"
 cp "$project_root/src/detour.h" "$build_dir/detour.h"
 cp "$project_root/src/xex.xml" "$build_dir/xex.xml"
 
-wine_build=$(env WINEPREFIX="$wine_prefix" WINEDEBUG=-all \
-  winepath -w "$build_dir" | tr -d '\r')
-wine_xdk=$(env WINEPREFIX="$wine_prefix" WINEDEBUG=-all \
-  winepath -w "$xdk" | tr -d '\r')
+wine_build=$("${wine_env[@]}" winepath -w "$build_dir" | tr -d '\r')
+wine_xdk=$("${wine_env[@]}" winepath -w "$xdk" | tr -d '\r')
 
 compile() {
   local source=$1
@@ -80,7 +130,7 @@ compile() {
   command+="/I$wine_xdk\\include\\xbox "
   command+="/I$wine_xdk\\TechPreview\\Jul12Compiler\\include\\xbox "
   command+="/Fo$wine_build\\$output $wine_build\\$source"
-  env WINEPREFIX="$wine_prefix" WINEDEBUG=-all wine cmd /c "$command"
+  "${wine_env[@]}" wine cmd /c "$command"
 }
 
 compile driver.cpp driver.obj
@@ -99,9 +149,9 @@ link_command+="$wine_build\\driver.obj $wine_build\\audio.obj "
 link_command+="$wine_build\\xbox_usb_transport.obj "
 link_command+="$wine_build\\uac_descriptors.obj $wine_build\\uac_clock.obj "
 link_command+="$wine_build\\detour.obj xapilib.lib xboxkrnl.lib libcMT.lib"
-env WINEPREFIX="$wine_prefix" WINEDEBUG=-all wine cmd /c "$link_command"
+"${wine_env[@]}" wine cmd /c "$link_command"
 
-env WINEPREFIX="$wine_prefix" WINEDEBUG=-all wine \
+"${wine_env[@]}" wine \
   "$xdk/bin/win32/imagexex.exe" \
   "/IN:$wine_build\\usb_audio360.pe" \
   "/OUT:$wine_build\\usb_audio360.xex" \
@@ -109,7 +159,7 @@ env WINEPREFIX="$wine_prefix" WINEDEBUG=-all wine \
 
 (
   cd "$build_dir"
-  env WINEPREFIX="$wine_prefix" WINEDEBUG=-all wine "$xextool" \
+  "${wine_env[@]}" wine "$xextool" \
     -l usb_audio360.xex | tr -d '\r' >xextool-info.txt
 )
 
