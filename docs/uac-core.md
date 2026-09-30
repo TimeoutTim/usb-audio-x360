@@ -41,8 +41,10 @@ and feedback transfer has produced a normal or cancellation completion. Static
 TRB and endpoint fields are cleared only after that drain, and the next device
 uses the incremented generation. A context mismatch or incomplete drain fails
 closed for the remainder of the boot. Re-arm checks run at most every 250 ms
-and stop after a five-second removal deadline. No controller or port reset is
-used.
+and stop after a five-second removal deadline. Hotplug cleanup uses no
+controller or port reset. Boot recovery may re-enumerate one root port after
+strict descriptor, controller, node-pool, and single-device checks; it never
+resets the whole controller.
 
 Portable tests now include continuous fixed/feedback pacing as well as the
 descriptor-to-clock-to-PCM pipeline. XDK release/debug builds succeed. Apple
@@ -415,9 +417,10 @@ callbacks, and timeout across the timer wrap boundary.
 3. Lifecycle: prove cancellation/draining semantics of the Xbox API before
    recycling transfer objects; suppress old-generation callbacks and new
    submissions during teardown. No whole-controller resets.
-4. Restore zero-touch boot and general hotplug only after lifecycle validation.
-5. Validate known-working UAC1 playback, then UAC2, hotplug and boot. A successful
-   USB completion alone does not prove audible output.
+4. Hardware-validate restored zero-touch boot with known-working UAC1 and UAC2
+   devices. General hotplug and its cleanup lifecycle are already validated.
+5. Treat successful USB completion as transport evidence only; audible output
+   remains the playback acceptance criterion.
 
 ## Reference architecture
 

@@ -4,6 +4,8 @@
 
 #include "audio.h"
 #include "device_claim_gate.h"
+#include "playback_profile.h"
+#include "uac_descriptors.h"
 #include "xbox_usb_transport.h"
 #include "detour.h"
 
@@ -144,6 +146,115 @@ static bool Resolve(HANDLE module, DWORD ordinal, T* result) {
   return XexGetProcedureAddress(module, ordinal, result) >= 0 && *result != 0;
 }
 
+static WORD ReadWord(const BYTE* value) {
+  return (WORD)value[0] | ((WORD)value[1] << 8);
+}
+
+static bool InNodePool(const BYTE* pool, const void* address) {
+  const BYTE* value = (const BYTE*)address;
+  return pool && value >= pool && value < pool + kNodePoolBytes &&
+         (((DWORD)(value - pool) & 0x0F) == 0);
+}
+
+static bool HasSupportedPlayback(const BYTE* configuration) {
+  if (!configuration || configuration[0] < 9 ||
+      configuration[1] != 2) {
+    return false;
+  }
+  const WORD total = ReadWord(configuration + 2);
+  if (total < configuration[0] || total > 0x400) return false;
+
+  uac::Format formats[32];
+  size_t count = 0;
+  if (uac::Discover(configuration, total, formats, 32, &count) != uac::kOk)
+    return false;
+  for (size_t index = 0; index < count; ++index) {
+    if (uac::SupportedFullSpeedPlayback(formats[index])) return true;
+  }
+  return false;
+}
+
+static bool ValidateResetRoutine() {
+  const volatile DWORD* code = (const volatile DWORD*)kResetRootHubPort;
+  return code[0] == 0x7D8802A6 && code[1] == 0x9181FFF8 &&
+         code[2] == 0xFBE1FFF0 && code[3] == 0x9421FFA0;
+}
+
+static bool PoolContainsOnlyTarget(BYTE* target_pool,
+                                   DeviceHandle* target) {
+  if (!target_pool || !target) return false;
+  for (DWORD controller = 0; controller < 4; ++controller) {
+    BYTE* hcd = ((BYTE**)kUsbHcdTable)[controller];
+    if (!hcd || *(BYTE**)(hcd + 0x40) != target_pool) continue;
+    DeviceHandle* root = g_get_root_hub_device_node(controller);
+    if (!root) return false;
+    for (DWORD port = 0; port < 8; ++port) {
+      DeviceHandle* device = g_get_port_device_node(root, port);
+      if (device && device != target) return false;
+    }
+  }
+  return true;
+}
+
+// DashLaunch can load the plugin after the kernel has already rejected the
+// DAC's AudioStreaming interface. Re-enumerate exactly one verified root-port
+// device so the installed add hook gets another chance to claim it. This is
+// intentionally stricter than hotplug: ambiguous mappings or a controller
+// pool shared with any other physical device fail closed.
+static bool ReenumerateBootDevice() {
+  if (g_playback_handle || !g_device_gate.available() ||
+      !ValidateResetRoutine()) {
+    return false;
+  }
+
+  DeviceHandle* selected = 0;
+  DeviceHandle* selected_root = 0;
+  BYTE* selected_hcd = 0;
+  DWORD selected_port = 0;
+  DWORD matches = 0;
+
+  for (DWORD controller = 0; controller < 4; ++controller) {
+    BYTE* hcd = ((BYTE**)kUsbHcdTable)[controller];
+    BYTE* context = ((BYTE**)kUsbDeviceStateTable)[controller];
+    DeviceHandle* root = g_get_root_hub_device_node(controller);
+    if (!hcd || !(hcd[0x96] & 2) || !context || !root ||
+        *(BYTE**)context != hcd ||
+        *(DeviceHandle**)(hcd + 0x48) != root ||
+        *(DWORD*)(context + 4) != 0 || *(DWORD*)(context + 8) != 0 ||
+        context[0x27A] != controller || context[0x27E] != 0 ||
+        !HasSupportedPlayback(context + 0x60)) {
+      continue;
+    }
+
+    UsbDeviceDescriptor* cached = (UsbDeviceDescriptor*)(context + 0x4C);
+    for (DWORD port = 0; port < 8; ++port) {
+      DeviceHandle* device = g_get_port_device_node(root, port);
+      UsbDeviceDescriptor* descriptor = device
+          ? g_get_device_descriptor(device) : 0;
+      if (!descriptor || descriptor->vendor_id != cached->vendor_id ||
+          descriptor->product_id != cached->product_id) {
+        continue;
+      }
+      ++matches;
+      selected = device;
+      selected_root = root;
+      selected_hcd = hcd;
+      selected_port = port;
+    }
+  }
+
+  BYTE* pool = selected_hcd ? *(BYTE**)(selected_hcd + 0x40) : 0;
+  if (matches != 1 || !selected || !selected_root ||
+      !InNodePool(pool, selected) || !InNodePool(pool, selected_root) ||
+      g_get_port_device_node(selected_root, selected_port) != selected ||
+      !PoolContainsOnlyTarget(pool, selected)) {
+    return false;
+  }
+
+  ((ResetRootHubPortFn)kResetRootHubPort)(selected_root, selected_port);
+  return true;
+}
+
 static bool ProfileForHandle(DeviceHandle* handle, AudioProfile* profile) {
   if (!handle || !profile || !g_get_interface_descriptor) return false;
   UsbInterfaceDescriptor* interface_descriptor =
@@ -223,7 +334,11 @@ static DWORD WINAPI AudioWorker(void*) {
   g_audio_api.playback_handle = (void*)g_playback_handle;
   if (!AudioInitialize(&g_audio_api)) return 0;
 
-  // No port or controller resets in this test build. Attach after startup.
+  // Give normal enumeration time to reach the hook before recovering a DAC
+  // that the kernel rejected before DashLaunch loaded this plugin.
+  for (DWORD settle = 0; settle < 500 && !g_playback_handle; ++settle)
+    Sleep(10);
+  if (!g_playback_handle) ReenumerateBootDevice();
 
   for (;;) {
     g_audio_api.playback_handle = (void*)g_playback_handle;

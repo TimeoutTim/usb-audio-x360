@@ -69,18 +69,22 @@ their explicit feedback endpoint to choose each packet's frame count.
 
 The render callback only publishes PCM into a bounded ring. Two four-packet
 OUT slots—and two feedback-IN slots when needed—are replenished from USB
-completion in the controller's serialized execution domain. The plugin does
-not reset a USB controller or port. A notification is displayed after the
-first successful audio transfer and when the device disconnects. On physical
-removal, static transfer storage is reused only after all submitted transfers
-have completed or been cancelled. The driver asynchronously closes its audio,
-feedback, and default-control endpoints using dedicated close requests, waits
-for every close callback, and only then completes kernel removal and re-arms.
+completion in the controller's serialized execution domain. If the DAC was
+already attached before DashLaunch loaded the plugin, the driver waits for
+startup to settle and re-enumerates that device's root port. This boot-only
+recovery fails closed unless the cached descriptors, kernel signature,
+controller state, node pool, and root-port mapping are valid and the DAC is
+the only physical device in that controller pool. It never resets an entire
+USB controller. A notification is displayed after the first successful audio
+transfer and when the device disconnects. On physical removal, static transfer
+storage is reused only after all submitted transfers have completed or been
+cancelled. The driver asynchronously closes its audio, feedback, and
+default-control endpoints using dedicated close requests, waits for every
+close callback, and only then completes kernel removal and re-arms.
 Re-arm checks are rate-limited and bounded; failure to drain within five
 seconds leaves the driver stopped until reboot. Repeated UAC1 reconnects and a
-UAC1-to-UAC2 switch have passed this cleanup path without rebooting. The plugin
-never resets a USB controller or port, so removal cannot disrupt another USB
-device that contains the console's softmod.
+UAC1-to-UAC2 switch have passed this cleanup path without rebooting. Hotplug
+and removal never reset a USB controller or port.
 
 Only one USB audio playback interface is claimed at a time. If multiple DACs
 are connected, the first compatible interface enumerated remains the active
