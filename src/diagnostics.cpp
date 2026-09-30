@@ -3,6 +3,7 @@
 
 #include "playback_profile.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -43,6 +44,21 @@ static volatile LONG g_dropped = 0;
 static char g_log_path[MAX_PATH];
 static char g_old_log_path[MAX_PATH];
 static bool g_initialized = false;
+
+struct XboxUnicodeString {
+  WORD length;
+  WORD maximum_length;
+  const WCHAR* buffer;
+};
+typedef char RequireUnicodeStringSize8[
+    sizeof(XboxUnicodeString) == 8 ? 1 : -1];
+
+struct LoaderEntryPrefix {
+  BYTE reserved[0x24];
+  XboxUnicodeString full_name;
+};
+typedef char RequireLoaderNameAt24[
+    offsetof(LoaderEntryPrefix, full_name) == 0x24 ? 1 : -1];
 
 static void Queue(DWORD type, const DWORD* values, unsigned value_count,
                   const void* payload, DWORD payload_length) {
@@ -204,9 +220,18 @@ static void WriteEvent(FILE* file, const Event& event) {
 void DiagnosticsInitialize(HANDLE module, WORD kernel_build) {
   memset(g_slots, 0, sizeof(g_slots));
   memset(g_log_path, 0, sizeof(g_log_path));
-  DWORD length = GetModuleFileNameA((HMODULE)module, g_log_path,
-                                    sizeof(g_log_path));
-  if (!length || length >= sizeof(g_log_path)) return;
+  const LoaderEntryPrefix* entry = (const LoaderEntryPrefix*)module;
+  if (!entry || !entry->full_name.buffer || !entry->full_name.length ||
+      (entry->full_name.length & 1) ||
+      entry->full_name.length > (sizeof(g_log_path) - 1) * sizeof(WCHAR))
+    return;
+  DWORD length = entry->full_name.length / sizeof(WCHAR);
+  for (DWORD index = 0; index < length; ++index) {
+    WCHAR value = entry->full_name.buffer[index];
+    if (value > 0x7f) return;
+    g_log_path[index] = (char)value;
+  }
+  g_log_path[length] = 0;
   char* separator = 0;
   for (char* cursor = g_log_path; *cursor; ++cursor)
     if (*cursor == '\\' || *cursor == '/') separator = cursor;

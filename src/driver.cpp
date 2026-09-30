@@ -127,6 +127,7 @@ typedef LONG (*RemoveDeviceCompleteFn)(DeviceHandle*);
 typedef DeviceHandle* (*GetRootHubDeviceNodeFn)(DWORD);
 typedef DeviceHandle* (*GetPortDeviceNodeFn)(DeviceHandle*, DWORD);
 typedef VOID (*ResetRootHubPortFn)(DeviceHandle*, DWORD);
+typedef PVOID (*XexPcToFileHeaderFn)(PVOID, PVOID*);
 
 static GetDeviceDescriptorFn g_get_device_descriptor = 0;
 static GetInterfaceDescriptorFn g_get_interface_descriptor = 0;
@@ -474,7 +475,11 @@ extern "C" BOOL APIENTRY DllMain(HANDLE module, DWORD reason, LPVOID) {
       version->build != kSupportedKernel) {
     return TRUE;
   }
-  DiagnosticsInitialize(module, version->build);
+  XexPcToFileHeaderFn pc_to_file_header = 0;
+  PVOID loader_entry = module;
+  if (Resolve(kernel, 412, &pc_to_file_header))
+    pc_to_file_header((PVOID)DiagnosticsInitialize, &loader_entry);
+  DiagnosticsInitialize(loader_entry, version->build);
 
   if (!Resolve(kernel, 759, &g_get_device_descriptor) ||
       !Resolve(kernel, 740, &g_add_device_complete) ||
