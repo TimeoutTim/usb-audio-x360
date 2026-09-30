@@ -23,10 +23,19 @@ inline InactiveAction ActionAfterInactive(unsigned audio_class_version) {
 }
 
 inline ActiveAction ActionAfterActive(unsigned audio_class_version,
-                                      bool endpoint_rate_control) {
-  return audio_class_version == 1 && endpoint_rate_control
+                                      bool endpoint_rate_control,
+                                      bool fixed_48000,
+                                      bool rate_programmed) {
+  return audio_class_version == 1 && endpoint_rate_control &&
+                 !fixed_48000 && !rate_programmed
              ? kProgramEndpointRate
              : kVerifyStreamingInterface;
+}
+
+inline bool AllowRateBeforeInterfaceFallback(unsigned audio_class_version,
+                                             bool fixed_48000,
+                                             bool already_attempted) {
+  return audio_class_version == 1 && !fixed_48000 && !already_attempted;
 }
 
 }  // namespace uac

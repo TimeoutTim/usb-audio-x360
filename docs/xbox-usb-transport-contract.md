@@ -278,6 +278,15 @@ This final gate passed on hardware with repeated SABRENT UAC1 and AirPods Max
 UAC2 swaps in both directions. Each removal re-armed on its first bounded check
 with zero outstanding ownership; Aurora and XBDM remained responsive.
 
+Later four-device testing exposed cumulative endpoint-open failure after several
+otherwise successful swaps. Calling the original `UsbdRemoveDeviceComplete`
+(ordinal 751) directly from the claimed-handle hook caused the console to become
+unresponsive on the first physical removal and was reverted. This proves that
+the hook is not a safe substitute for a fully prepared class-driver removal
+lifecycle. Resource cleanup requires a separately audited asynchronous endpoint
+close/removal design; manual close and shared-controller reset remain disabled
+until that ordering and ownership are established.
+
 The prior isolated successes are useful evidence, not a substitute for these
 contracts. No further hardware variation is justified merely by changing a
 packet count or delay until the corresponding requirement is understood.

@@ -168,9 +168,12 @@ static DWORD g_control_deadline = 1000;
 enum SetupStage { kHeader, kDescriptor, kConfiguration, kInactive,
                   kClock, kUac1Rate, kUnmute, kActive, kFinished, kOpening,
                   kReadMute, kReadVolume, kVerifyInterface, kVerifyClock,
-                  kVerifyMute, kVerifyVolume };
+                  kVerifyMute, kVerifyVolume, kUac1FallbackInactive,
+                  kUac1FallbackRate };
 static BYTE g_read_feature_id = 0;
 static BYTE g_read_feature_controls = 0;
+static bool g_uac1_rate_programmed = false;
+static bool g_uac1_rate_fallback = false;
 static SetupStage g_setup_stage = kHeader;
 static DWORD g_endpoint_phase_time = 0;
 static int g_endpoint_phase = 0;
@@ -262,6 +265,8 @@ static void ResetDeviceState() {
   g_unmuted = 0;
   g_read_feature_id = 0;
   g_read_feature_controls = 0;
+  g_uac1_rate_programmed = false;
+  g_uac1_rate_fallback = false;
   g_setup_stage = kHeader;
   g_endpoint_phase = 0;
   g_endpoint_phase_time = 0;
@@ -492,11 +497,13 @@ static void SetupFailed(DWORD error) {
 }
 
 static bool SelectProfile(DWORD received) {
-  uac::Format formats[16];
+  // The bounded 1 KiB configuration can contain many alternates. Discovery
+  // retains unsupported candidates so selection can rank compatible profiles.
+  uac::Format formats[32];
   size_t count = 0;
   if (received < 9 || Read16(g_configuration_descriptor + 2) != received)
     return false;
-  if (uac::Discover(g_configuration_descriptor, received, formats, 16,
+  if (uac::Discover(g_configuration_descriptor, received, formats, 32,
                     &count) != uac::kOk) return false;
   size_t selected = 0;
   if (!uac::SelectFullSpeedPlayback(
@@ -1112,6 +1119,20 @@ static void SetupTick() {
     UsbAudioDiagnostic[35] = status;
     UsbAudioDiagnostic[36] = received;
     if (status != 0) {
+      // Most UAC1 devices accept endpoint-rate programming after their active
+      // alternate is selected. A bounded fallback supports firmware that only
+      // exposes the control while inactive: deactivate once, program, then
+      // reactivate. Never retry another failed operation or loop indefinitely.
+      if (g_setup_stage == kUac1Rate &&
+          uac::AllowRateBeforeInterfaceFallback(
+              g_profile.audio_class_version, g_format.fixed_48000,
+              g_uac1_rate_fallback)) {
+        g_uac1_rate_fallback = true;
+        UsbAudioActivationDiagnostic[10] = 1;
+        QueueControl(1, 11, 0, g_profile.interface_number, 0, 0,
+                     kUac1FallbackInactive);
+        return;
+      }
       // Some otherwise conforming UAC1 devices accept SET_INTERFACE but stall
       // the standard GET_INTERFACE readback. The active SET already completed
       // successfully before this request was issued, so continue without
@@ -1165,7 +1186,19 @@ static void SetupTick() {
         g_clock.Complete(g_clock_request.token, true, g_control_data,
                          received, GetTickCount());
         break;
-      case kUac1Rate: VerifyInterface(); break;
+      case kUac1Rate:
+        g_uac1_rate_programmed = true;
+        VerifyInterface();
+        break;
+      case kUac1FallbackInactive:
+        QueueControl(0x22, 1, 0x0100, g_profile.endpoint_address, 3,
+                     g_sample_rate, kUac1FallbackRate);
+        break;
+      case kUac1FallbackRate:
+        g_uac1_rate_programmed = true;
+        UsbAudioActivationDiagnostic[11] = 1;
+        ActivateInterface();
+        break;
       case kUnmute: ReadMuteOrVolume(); break;
       case kReadMute:
         UsbAudioToneDiagnostic[3] = g_control_data[0];
@@ -1180,7 +1213,9 @@ static void SetupTick() {
       case kActive:
         UsbAudioDiagnostic[55] = 2;  // SET_INTERFACE completed successfully.
         if (uac::ActionAfterActive(g_profile.audio_class_version,
-                                   g_format.endpoint_rate_control) ==
+                                   g_format.endpoint_rate_control,
+                                   g_format.fixed_48000,
+                                   g_uac1_rate_programmed) ==
             uac::kProgramEndpointRate)
           QueueControl(0x22, 1, 0x0100, g_profile.endpoint_address, 3,
                        g_sample_rate, kUac1Rate);
@@ -1376,7 +1411,7 @@ static void DebugInitialize() {
 }  // namespace
 
 BOOL AudioInitialize(const AudioHostApi* api) {
-  UsbAudioDiagnostic[63] = 0x55414348;  // UAC1 interface-first rate setup.
+  UsbAudioDiagnostic[63] = 0x5541434b;  // Tolerant discovery/rate fallback.
 #if USB_AUDIO360_DEBUG_API
   UsbAudioDiagnostic[63] = 0x55414342;
 #endif

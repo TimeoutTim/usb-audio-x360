@@ -143,6 +143,7 @@ int main() {
   assert(formats[0].data.address == 2 &&
          formats[0].data.max_packet_bytes == 600);
   assert(formats[0].endpoint_rate_control && formats[0].supports_48000);
+  assert(!formats[0].fixed_48000);
   assert(uac::SupportedFullSpeedPlayback(formats[0]));
   assert(formats[1].alternate == 2 && formats[1].sample_bytes == 3);
   assert(uac::SupportedFullSpeedPlayback(formats[1]));
@@ -153,6 +154,9 @@ int main() {
   selected = 99;
   assert(uac::SelectFullSpeedPlayback(formats, 2, 2, &selected));
   assert(selected == 0);  // Prefer 16-bit alternate 1 over alternate 2.
+  uac::Format reordered[2] = {formats[1], formats[0]};
+  assert(uac::SelectFullSpeedPlayback(reordered, 2, 2, &selected));
+  assert(selected == 1);  // Preference is semantic, not descriptor order.
   assert(!uac::SelectFullSpeedPlayback(0, 1, 2, &selected));
   assert(!uac::SelectFullSpeedPlayback(formats, 2, 2, 0));
   uac::Format capacity = formats[0];
@@ -172,6 +176,7 @@ int main() {
          formats[0].data.max_packet_bytes == 192);
   assert(formats[0].sync == uac::kNoSync && !formats[0].feedback.address);
   assert(formats[0].endpoint_rate_control && formats[0].supports_48000);
+  assert(formats[0].fixed_48000);
   assert(uac::SupportedFullSpeedPlayback(formats[0]));
 
   // Continuous UAC1 rate range, followed by a range excluding 48 kHz.
@@ -192,7 +197,9 @@ int main() {
       continuous[o + 13] = 0;
     }
   }
-  assert(Parse(continuous, formats) == 0);
+  assert(Parse(continuous, formats) == 1);
+  assert(!formats[0].supports_48000);
+  assert(!uac::SupportedFullSpeedPlayback(formats[0]));
 
   Bytes v2 = Header(true);
   Stream(v2, true, 2, true, true, true);
@@ -273,23 +280,31 @@ int main() {
   assert(uac::Discover(0, 0, formats, 8, &count) == uac::kMalformed);
   assert(uac::Discover(&v2[0], v2.size(), 0, 8, &count) == uac::kMalformed);
 
-  // No IAD association: do not guess which audio function owns the stream.
+  // Discovery retains bounded candidates, while selection refuses a UAC2
+  // stream whose audio function/clock association is ambiguous.
   bad = v2; bad[10] = 0xff;
-  assert(Parse(bad, formats) == 0);
+  assert(Parse(bad, formats) == 1);
+  assert(!formats[0].topology_valid);
+  assert(!uac::SupportedFullSpeedPlayback(formats[0]));
   // Wrong terminal link must not borrow an unrelated clock.
   bad = v2;
   for (size_t o = 9; o < bad.size(); o += bad[o])
     if (bad[o + 1] == 0x24 && bad[o] == 16) bad[o + 3] = 99;
-  assert(Parse(bad, formats) == 0);
+  assert(Parse(bad, formats) == 1);
+  assert(!formats[0].topology_valid);
+  assert(!uac::SupportedFullSpeedPlayback(formats[0]));
   // No feedback endpoint, invalid sample width, invalid endpoint interval.
   bad = v2; bad[bad.size() - 5] = 4;
-  assert(Parse(bad, formats) == 0);
+  assert(Parse(bad, formats) == 1);
+  assert(!formats[0].endpoint_layout_supported);
+  assert(!uac::SupportedFullSpeedPlayback(formats[0]));
   bad = v2; bad[bad.size() - 1] = 0;
   assert(Parse(bad, formats) == 0);
   bad = v2;
   for (size_t o = 9; o < bad.size(); o += bad[o])
     if (bad[o + 1] == 0x24 && bad[o] == 6) bad[o + 5] = 33;
-  assert(Parse(bad, formats) == 0);
+  assert(Parse(bad, formats) == 1);
+  assert(!uac::SupportedFullSpeedPlayback(formats[0]));
 
   // Exercise every single-byte mutation under ASan/UBSan. These are safety
   // checks, not assertions that a mutated descriptor describes a valid device.

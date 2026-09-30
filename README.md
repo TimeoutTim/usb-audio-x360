@@ -28,7 +28,9 @@ without rebooting. See [test scope and procedure](docs/uac-core.md).
 Compatibility is selected from USB Audio descriptors rather than these device
 identifiers. The list records hardware that has been tested successfully; it
 is not an allowlist or a guarantee that every UAC1 or UAC2 topology and format
-will work.
+will work. Descriptor discovery retains bounded PCM playback candidates even
+when this MVP cannot stream them; a separate compatibility selector chooses a
+safe native 48 kHz stereo profile and prefers 16-bit PCM.
 
 The driver is hardware-tested on retail kernel `2.0.17559.0`. Its current
 descriptor and transport policy supports:
@@ -59,9 +61,11 @@ The plugin hooks the kernel USB add/remove completion path and claims an
 otherwise unsupported UAC1 or UAC2 playback interface. It captures the
 console's final stereo render mix and converts it from planar floating-point
 samples into the descriptor-selected signed PCM container. UAC1 sample-rate
-control is endpoint-based; UAC2 follows the terminal's clock graph and uses
-AudioControl clock requests. Asynchronous devices use their explicit feedback
-endpoint to choose each packet's frame count.
+control is endpoint-based. Fixed 48 kHz UAC1 profiles do not receive an
+unnecessary rate write; variable-rate profiles use interface-first setup with
+one bounded deactivate/rate/reactivate fallback. UAC2 follows the terminal's
+clock graph and uses AudioControl clock requests. Asynchronous devices use
+their explicit feedback endpoint to choose each packet's frame count.
 
 The render callback only publishes PCM into a bounded ring. Two four-packet
 OUT slots—and two feedback-IN slots when needed—are replenished from USB
@@ -71,8 +75,10 @@ first successful audio transfer and when the device disconnects. On physical
 removal, static transfer storage is reused only after all submitted transfers
 have completed or been cancelled. Re-arm checks are rate-limited and bounded;
 failure to drain within five seconds leaves the driver stopped until reboot.
-Repeated Sabrent-to-AirPods and AirPods-to-Sabrent switching has been validated
-on hardware without rebooting the console.
+Pairwise Sabrent-to-AirPods and AirPods-to-Sabrent switching has been validated
+without rebooting. Longer four-device swap sequences have exposed cumulative
+Xbox endpoint-open exhaustion; a cold reboot restores operation. Safe
+asynchronous endpoint cleanup remains under investigation.
 
 ## Install
 

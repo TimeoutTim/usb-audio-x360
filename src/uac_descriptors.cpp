@@ -108,6 +108,7 @@ bool Candidate(const Byte* b, size_t total, size_t begin, size_t end,
   unsigned data_count = 0, feedback_count = 0, endpoint_count = 0;
   unsigned class_endpoint_count = 0;
   Byte sync_address = 0;
+  f->endpoint_layout_supported = true;
   for (size_t o = begin + iface[0]; o < end; o += b[o]) {
     const Byte* p = b + o;
     if (p[1] == 0x24 && p[0] >= 3 && p[2] == 1) {
@@ -133,8 +134,12 @@ bool Candidate(const Byte* b, size_t total, size_t begin, size_t end,
           f->supports_48000 = Read24(p + 8) <= 48000 && Read24(p + 11) >= 48000;
         } else {
           if (p[0] < 8u + 3u * p[7]) return false;
-          for (unsigned i = 0; i < p[7]; ++i)
-            if (Read24(p + 8 + i * 3) == 48000) f->supports_48000 = true;
+          for (unsigned i = 0; i < p[7]; ++i) {
+            if (Read24(p + 8 + i * 3) == 48000) {
+              f->supports_48000 = true;
+              if (p[7] == 1) f->fixed_48000 = true;
+            }
+          }
         }
       } else {
         if (p[0] < 6) return false;
@@ -142,42 +147,62 @@ bool Candidate(const Byte* b, size_t total, size_t begin, size_t end,
       }
     } else if (p[1] == 5) {
       ++endpoint_count;
-      if ((p[3] & 3) != 1) return false;
+      if ((p[3] & 3) != 1) f->endpoint_layout_supported = false;
       unsigned usage = (p[3] >> 4) & 3;
       if (!(p[2] & 0x80) && usage == 0) {
-        if (++data_count != 1 || !ReadEndpoint(p, &f->data)) return false;
-        f->sync = static_cast<Sync>((p[3] >> 2) & 3);
-        if (f->version == 1 && p[0] >= 9) sync_address = p[8];
+        ++data_count;
+        if (data_count == 1) {
+          if (!ReadEndpoint(p, &f->data)) return false;
+          f->sync = static_cast<Sync>((p[3] >> 2) & 3);
+          if (f->version == 1 && p[0] >= 9) sync_address = p[8];
+        } else {
+          f->endpoint_layout_supported = false;
+        }
       } else if ((p[2] & 0x80) &&
                  (usage == 1 || (f->version == 1 && usage == 0))) {
-        if (++feedback_count != 1 || !ReadEndpoint(p, &f->feedback)) return false;
-      } else return false;  // Capture/implicit feedback is not this MVP.
+        ++feedback_count;
+        if (feedback_count == 1) {
+          if (!ReadEndpoint(p, &f->feedback)) return false;
+        } else {
+          f->endpoint_layout_supported = false;
+        }
+      } else {
+        // Retain the candidate for diagnostics/selection, but this MVP cannot
+        // stream capture or implicit-feedback endpoint layouts.
+        f->endpoint_layout_supported = false;
+      }
     } else if (p[1] == 0x25 && f->version == 1) {
       // A few UAC1 firmwares place the class-specific endpoint descriptor
       // before the standard endpoint descriptor. There is only one data
       // endpoint descriptor per supported alternate, so retain its controls
       // independent of that noncanonical ordering.
-      if (p[0] < 7 || p[2] != 1 || ++class_endpoint_count != 1) return false;
-      f->endpoint_rate_control = (p[3] & 1) != 0;
+      if (p[0] < 7 || p[2] != 1) return false;
+      if (++class_endpoint_count == 1)
+        f->endpoint_rate_control = (p[3] & 1) != 0;
+      else
+        f->endpoint_layout_supported = false;
     }
   }
-  if (!general || !format || !pcm || !f->terminal || !data_count ||
-      endpoint_count != iface[4] || f->channels != 2 ||
-      f->sample_bytes < 2 || f->sample_bytes > 4 ||
-      !f->valid_bits || f->valid_bits > f->sample_bytes * 8 ||
-      (f->sync == kNoSync && f->version != 1) ||
-      (f->rate_48000_known && !f->supports_48000))
+  if (!general || !format || !pcm || !f->terminal || !data_count)
     return false;
+  if (endpoint_count != iface[4]) f->endpoint_layout_supported = false;
   if (f->sync == kAsynchronous) {
     if (!feedback_count || (sync_address && sync_address != f->feedback.address) ||
         (f->version == 1 && sync_address != f->feedback.address) ||
         f->feedback.max_packet_bytes < 3 || f->feedback.max_packet_bytes > 4)
-      return false;
-  } else if (feedback_count || sync_address) return false;
-  return ControlFor(b, total, f->interface_number, f->version,
-                    &f->control_interface) &&
-         TerminalClock(b, total, f->control_interface, f->terminal,
-                       f->version, &f->clock);
+      f->endpoint_layout_supported = false;
+  } else if (feedback_count || sync_address) {
+    f->endpoint_layout_supported = false;
+  }
+  const bool associated = ControlFor(b, total, f->interface_number, f->version,
+                                     &f->control_interface);
+  const bool terminal = associated && TerminalClock(
+      b, total, f->control_interface, f->terminal, f->version, &f->clock);
+  // UAC1 endpoint direction is sufficient to identify playback; its AC
+  // topology is not needed for this driver's endpoint-based setup. UAC2 must
+  // retain an unambiguous clock association.
+  f->topology_valid = f->version == 1 || terminal;
+  return true;
 }
 }  // namespace
 

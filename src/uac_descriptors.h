@@ -36,6 +36,9 @@ struct Format {
   bool endpoint_rate_control;
   bool rate_48000_known;  // UAC2 deliberately leaves rate discovery to controls.
   bool supports_48000;
+  bool fixed_48000;
+  bool endpoint_layout_supported;
+  bool topology_valid;
 };
 
 enum ClockKind { kClockSource, kClockSelector, kClockMultiplier };
