@@ -152,10 +152,10 @@ The script extracts the required XDK files into a temporary build directory,
 compiles the PowerPC DLL, packages it with `imagexex`, applies XexTool, and
 writes `bin/usb_audio360.xex`.
 
-GitHub Actions builds every pushed commit using a dedicated self-hosted runner.
+GitHub Actions builds every pushed commit using a dedicated native Linux runner.
 Version tags matching `v*` also publish the validated XEX and its SHA-256 file
 as a GitHub Release. See the [runner deployment guide](deploy/github-runner/README.md)
-for the Docker Compose setup and private toolchain mounts.
+for the Ubuntu LXC setup and private toolchain installation.
 
 ## AI code-generation disclosure
 

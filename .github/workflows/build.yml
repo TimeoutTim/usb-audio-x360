@@ -30,11 +30,20 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v7
 
-      - name: Verify private toolchain mounts
+      - name: Verify native build environment
         shell: bash
         run: |
+          command -v clang++
+          command -v python3
+          command -v 7z
+          command -v wine
+          command -v xvfb-run
+          command -v xauth
+          wine --version | grep -Eq '^wine-11\.0( \(Staging\))?$'
           test -r "$XDK_INSTALLER"
           test -r "$XEXTOOL"
+          install -d "$USB_AUDIO360_RUNTIME"
+          test -w "$USB_AUDIO360_RUNTIME"
 
       - name: Run portable tests
         shell: bash
@@ -44,7 +53,7 @@ jobs:
 
       - name: Build Xbox 360 plugin
         shell: bash
-        run: bash tools/build_plugin.sh
+        run: xvfb-run -a --server-args="-screen 0 1024x768x24 -nolisten tcp" bash tools/build_plugin.sh
 
       - name: Record artifact checksum
         shell: bash
