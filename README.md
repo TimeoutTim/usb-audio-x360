@@ -73,12 +73,14 @@ completion in the controller's serialized execution domain. The plugin does
 not reset a USB controller or port. A notification is displayed after the
 first successful audio transfer and when the device disconnects. On physical
 removal, static transfer storage is reused only after all submitted transfers
-have completed or been cancelled. Re-arm checks are rate-limited and bounded;
-failure to drain within five seconds leaves the driver stopped until reboot.
-Pairwise Sabrent-to-AirPods and AirPods-to-Sabrent switching has been validated
-without rebooting. Longer four-device swap sequences have exposed cumulative
-Xbox endpoint-open exhaustion; a cold reboot restores operation. Safe
-asynchronous endpoint cleanup remains under investigation.
+have completed or been cancelled. The driver asynchronously closes its audio,
+feedback, and default-control endpoints using dedicated close requests, waits
+for every close callback, and only then completes kernel removal and re-arms.
+Re-arm checks are rate-limited and bounded; failure to drain within five
+seconds leaves the driver stopped until reboot. Repeated UAC1 reconnects and a
+UAC1-to-UAC2 switch have passed this cleanup path without rebooting. The plugin
+never resets a USB controller or port, so removal cannot disrupt another USB
+device that contains the console's softmod.
 
 ## Install
 

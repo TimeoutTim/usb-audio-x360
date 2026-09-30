@@ -29,7 +29,7 @@ No kernel binary or disassembly capture is included in this repository.
 | Completion data lifetime | `0x800dcce0` builds lengths/status arrays on its stack and invokes the callback through `0x800d5d20`. | Copy completion metadata before returning. Never queue those array pointers to a worker. Normal OHCI ITD completion encodes at most eight packets. |
 | Control actual length | Control queue initializes TRB+0x1c; completion `0x800dcb48` accumulates completed data bytes there. Requested length remains at +0x18. | Validate actual length, not allocation/request length. Current compile-time layout checks cover +0x1c actual and +0x20 setup. |
 | Close is asynchronous | Ordinal 750 at `0x800d8238` routes to `0x800dc590`, links a close request onto controller+0x3c, unlinks the endpoint, marks it skipped, and enables deferred processing. `0x800dd078` processes it later. | Queue-close return is not a drain barrier. Use a dedicated close-request object and wait for its callback. |
-| Cancellation precedes close callback in inspected path | Deferred processing gathers isoch TRBs via `0x800dcf88`, calls cancellation completion through `0x800d5d68`, then returns endpoint storage and invokes close callbacks at `0x800dd354`. | Count every normal/cancelled transfer completion and close completion before reuse. Cancellation uses the isoch callback shape, with cancelled statuses and zero lengths. Device-removal ordering still needs its own audit. |
+| Cancellation precedes close callback in inspected path | Deferred processing gathers isoch TRBs via `0x800dcf88`, calls cancellation completion through `0x800d5d68`, then returns endpoint storage and invokes close callbacks at `0x800dd354`. | Count every normal/cancelled transfer completion and close completion before reuse. Cancellation uses the isoch callback shape, with cancelled statuses and zero lengths. |
 | Queue resource assumptions | Isoch queue consumes global ITD entries without a graceful failure return or adequate null handling after free-list allocation. | Use a small bounded queue. Never interpret the void queue call as allocation success or retry blindly. Global resource exhaustion remains a kernel-level limitation. |
 
 ## DPC helper ABI established by inspection
@@ -74,9 +74,10 @@ object or hardware frame counter to get a different schedule.
    close, process cancellation callbacks, and wait outside DPC context. Reclaim
    only after all transfer and close completions. A deadline reports failure;
    it does not authorize freeing hardware-owned storage.
-6. **Removal:** until the complete remove path is proved, retain the current
-   single-attachment/no-unload rule. A generation tag alone cannot make a stale
-   device pointer or DMA buffer safe.
+6. **Removal:** invoke the original remove completion exactly once, in the USB
+   domain, only after transfer ownership and every endpoint-close request have
+   drained. A generation tag alone cannot make a stale device pointer or DMA
+   buffer safe. A timeout remains stopped and retains all storage.
 
 Keep audio algorithm state separate from this adapter. Descriptor parsing,
 clock selection, feedback decoding, sample packing and packet timing should
@@ -86,7 +87,8 @@ replace the Xbox host-controller contract.
 ## What is still unproved
 
 - The original freeze's exact instruction and cause.
-- Device-removal ordering relative to every possible control/isoch/close callback.
+- Shutdown ordering on kernels or host-controller paths outside the validated
+  retail-17559 full-speed OHCI scope.
 - Whether all shutdown/error paths preserve the normal common-processor domain.
 - Buffer residency/coherency and physical layout requirements for every memory
   allocation class. The helper at `0x8007fc90` must not be casually described as
@@ -233,10 +235,12 @@ playback or additional test transfers have been enabled.
 `transfer_ownership.h` supplies bounded DPC-owned accounting. Submission records
 ownership before entering the host; completion clears it, and removal stops new
 work without inventing completions. For physical removal, the replacement path
-waits for every normal/cancellation completion and a one-second settle interval,
-then clears static request state and re-arms with the incremented generation.
-Failure to drain remains stopped. This does not expose a general close wrapper:
-software-directed close still requires separate close-request accounting.
+stops submissions, queues dedicated close requests for every opened data
+endpoint and the default control endpoint, then waits for all normal/cancellation
+and close completions. After a one-second settle interval it calls the original
+remove completion exactly once in the USB domain, clears static request state,
+and re-arms with the incremented generation. Failure to drain remains stopped
+and retains all request storage.
 The bookkeeping assumes the host completes each submission once: a duplicated
 callback after the same TRB has already been resubmitted cannot be distinguished
 using the pointer alone. The current single-batch test never resubmits its TRB.
@@ -256,10 +260,12 @@ completion, duplicate completion, stop before dispatch, stale generation,
 cancellation-before-close, and timeout with retained ownership. Assertions must
 show no double submission, no early reuse, and no worker invocation of raw USB.
 
-Current ownership tests cover immediate/delayed completion accounting, duplicate
-completion before reuse, capacity, invalid generations, stop-before-dispatch and
-retained ownership after stop. They do not execute Xbox DPCs or establish the
-still-unimplemented close/cancellation ordering.
+Host tests cover immediate/delayed completion accounting, duplicate completion
+before reuse, capacity, invalid generations, stop-before-dispatch, retained
+ownership after stop, out-of-order close callbacks, outstanding-transfer gating,
+duplicate close completion, one-shot finalization, and zero-endpoint cleanup.
+They do not execute Xbox DPCs; the ordering used by the adapter comes from the
+kernel audit and the hardware results below.
 
 **Hardware gates, in order:**
 
@@ -278,14 +284,21 @@ This final gate passed on hardware with repeated SABRENT UAC1 and AirPods Max
 UAC2 swaps in both directions. Each removal re-armed on its first bounded check
 with zero outstanding ownership; Aurora and XBDM remained responsive.
 
-Later four-device testing exposed cumulative endpoint-open failure after several
-otherwise successful swaps. Calling the original `UsbdRemoveDeviceComplete`
-(ordinal 751) directly from the claimed-handle hook caused the console to become
-unresponsive on the first physical removal and was reverted. This proves that
-the hook is not a safe substitute for a fully prepared class-driver removal
-lifecycle. Resource cleanup requires a separately audited asynchronous endpoint
-close/removal design; manual close and shared-controller reset remain disabled
-until that ordering and ownership are established.
+Later four-device testing exposed cumulative endpoint-open failure because the
+old path did not close endpoints. Calling the original
+`UsbdRemoveDeviceComplete` (ordinal 751) immediately from the claimed-handle
+hook caused the console to become unresponsive on the first physical removal.
+The replacement lifecycle therefore queues asynchronous closes first and defers
+the original completion until transfer and close ownership have both drained.
+
+That lifecycle passed three consecutive physical removals without rebooting:
+two SPACETOUCH UAC1 removals each completed two closes (OUT and default), then
+an AirPods Max UAC2 removal completed three (OUT, feedback IN, and default).
+Every cycle reached zero transfer and close ownership, invoked original removal
+once on processor 2 at IRQL 2, and reported no cleanup error. SPACETOUCH reopened
+after the first removal, and AirPods Max streamed successfully after the two UAC1
+cycles. Aurora and XBDM remained responsive. Shared-controller and port resets
+remain prohibited.
 
 The prior isolated successes are useful evidence, not a substitute for these
 contracts. No further hardware variation is justified merely by changing a

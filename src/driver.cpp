@@ -190,9 +190,11 @@ static int AddDeviceCompleteHook(DeviceHandle* handle, int status) {
 
 static LONG RemoveDeviceCompleteHook(DeviceHandle* handle) {
   if (handle && handle == g_playback_handle) {
-    UsbTransportDetach(handle);
+    UsbRemoveCompleteRoutine remove_complete =
+        (UsbRemoveCompleteRoutine)
+            g_remove_detour.Original<RemoveDeviceCompleteFn>();
+    UsbTransportDetach(handle, remove_complete);
     g_playback_handle = 0;
-    g_extension.device_handle = 0;
     AudioDeviceRemoved();
     return 0;
   }

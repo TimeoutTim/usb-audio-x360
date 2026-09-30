@@ -34,6 +34,7 @@ extern "C" volatile DWORD UsbAudioDiagnostic[64] = {0};
 extern "C" volatile DWORD UsbAudioControlDiagnostic[16] = {0};
 extern "C" volatile DWORD UsbAudioToneDiagnostic[16] = {0};
 extern "C" volatile DWORD UsbAudioActivationDiagnostic[16] = {0};
+extern "C" volatile DWORD UsbAudioCleanupDiagnostic[16] = {0};
 // First 32 setup requests, eight words each; never wraps or owns USB storage.
 extern "C" volatile DWORD UsbAudioSetupTrace[256] = {0};
 #if USB_AUDIO360_DEBUG_API
@@ -1411,7 +1412,7 @@ static void DebugInitialize() {
 }  // namespace
 
 BOOL AudioInitialize(const AudioHostApi* api) {
-  UsbAudioDiagnostic[63] = 0x5541434b;  // Tolerant discovery/rate fallback.
+  UsbAudioDiagnostic[63] = 0x5541434c;  // Asynchronous endpoint cleanup.
 #if USB_AUDIO360_DEBUG_API
   UsbAudioDiagnostic[63] = 0x55414342;
 #endif

@@ -5,7 +5,8 @@
 BOOL UsbTransportInitialize(const AudioHostApi* api);
 // Attach/remove are called from the existing USB add/remove hooks.
 BOOL UsbTransportAttach(void* handle);
-VOID UsbTransportDetach(void* handle);
+typedef LONG (*UsbRemoveCompleteRoutine)(void* handle);
+BOOL UsbTransportDetach(void* handle, UsbRemoveCompleteRoutine remove_complete);
 // Passive caller after physical removal: succeeds only after every submitted
 // transfer/cancellation has completed in the USB domain.
 BOOL UsbTransportRearm();

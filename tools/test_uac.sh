@@ -2,7 +2,7 @@
 set -euo pipefail
 project_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 test_dir=$(mktemp -d /tmp/usb-audio360-tests.XXXXXX)
-trap 'rm -f "$test_dir/uac_tests" "$test_dir/clock_tests" "$test_dir/setup_policy_tests" "$test_dir/ownership_tests" "$test_dir/isoch_tests" "$test_dir/budget_tests" "$test_dir/pacer_tests" "$test_dir/deadline_tests" "$test_dir/tone_tests" "$test_dir/pipeline_tests" "$test_dir/debug_tests"; rmdir "$test_dir"' EXIT
+trap 'rm -f "$test_dir/uac_tests" "$test_dir/clock_tests" "$test_dir/setup_policy_tests" "$test_dir/cleanup_tests" "$test_dir/ownership_tests" "$test_dir/isoch_tests" "$test_dir/budget_tests" "$test_dir/pacer_tests" "$test_dir/deadline_tests" "$test_dir/tone_tests" "$test_dir/pipeline_tests" "$test_dir/debug_tests"; rmdir "$test_dir"' EXIT
 compiler=${CXX:-clang++}
 "$compiler" -std=c++98 -Wall -Wextra -Werror -pedantic \
   -fsanitize=address,undefined -fno-omit-frame-pointer -g \
@@ -26,6 +26,11 @@ rm -f "$test_dir/debug_tests"
   -I"$project_root/src" "$project_root/tests/uac_setup_policy_test.cpp" \
   -o "$test_dir/setup_policy_tests"
 "$test_dir/setup_policy_tests"
+"$compiler" -std=c++98 -Wall -Wextra -Werror -pedantic \
+  -fsanitize=address,undefined -fno-omit-frame-pointer -g \
+  -I"$project_root/src" "$project_root/tests/cleanup_lifecycle_test.cpp" \
+  -o "$test_dir/cleanup_tests"
+"$test_dir/cleanup_tests"
 "$compiler" -std=c++11 -Wall -Wextra -Werror -pedantic \
   -fsanitize=address,undefined -fno-omit-frame-pointer -g \
   -I"$project_root/src" "$project_root/tests/transfer_ownership_test.cpp" \
