@@ -9,6 +9,13 @@ struct AudioProfile {
   BYTE alternate_setting;
   BYTE endpoint_address;
   WORD endpoint_packet_size;
+  BYTE audio_class_version;
+  BYTE bytes_per_sample;
+  BYTE feedback_endpoint_address;
+  WORD feedback_endpoint_packet_size;
+  BYTE control_interface_number;
+  BYTE clock_source_id;
+  BYTE feature_unit_id;
 };
 
 struct AudioHostApi {

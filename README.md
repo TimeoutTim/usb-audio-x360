@@ -6,15 +6,27 @@ as a computer LCD. It lets headphones or powered speakers receive the
 console's stereo mix without requiring an HDMI audio extractor and a separate
 headphone amplifier.
 
-It is implemented as an experimental DashLaunch plugin and supports a narrow
-USB Audio Class 1 (UAC1) playback profile.
+It is implemented as an experimental DashLaunch plugin. The current
+development source supports descriptor-selected full-speed USB Audio Class 1
+(UAC1) and USB Audio Class 2 (UAC2) stereo playback profiles at 48 kHz.
+
+**Development branch:** continuous captured Xbox system audio has passed
+hardware validation with both UAC1 and UAC2 output devices. Physical removal
+stops new transfers, drains cancellation completions, and re-arms the driver
+after a one-second settling period so another compatible device can be used
+without rebooting. See [test scope and procedure](docs/uac-core.md).
 
 ## Tested hardware
 
-Development and hardware validation used a SABRENT AU-MMSA USB External
-Stereo Sound Adapter with USB VID:PID `0d8c:0014`. Compatibility is determined
-by the UAC1 interface profile described below rather than by this identifier,
-so other adapters with the same profile may also work.
+| Device | USB audio class | USB VID:PID | Connection | Validation |
+| --- | --- | --- | --- | --- |
+| SABRENT AU-MMSA USB External Stereo Sound Adapter | UAC1 | `0d8c:0014` | USB-A | Continuous Xbox system audio |
+| Apple AirPods Max USB Audio | UAC2 | `05ac:110c` | USB-A-to-USB-C cable | Continuous Xbox system audio |
+
+Compatibility is selected from USB Audio descriptors rather than these device
+identifiers. The list records hardware that has been tested successfully; it
+is not an allowlist or a guarantee that every UAC1 or UAC2 topology and format
+will work.
 
 The MVP is hardware-tested on retail kernel `2.0.17559.0`. It supports a
 descriptor-compatible UAC1 output with:
@@ -32,18 +44,24 @@ console, and it is not an official Microsoft driver.
 
 ## How it works
 
-The plugin hooks the kernel USB add/remove completion path and claims the
-otherwise unsupported UAC1 playback interface. It captures the console's
-final stereo render mix, converts it from planar floating-point samples to
-interleaved signed 16-bit PCM, and keeps two four-frame isochronous transfers
-queued to the device.
+The plugin hooks the kernel USB add/remove completion path and claims an
+otherwise unsupported UAC1 or UAC2 playback interface. It captures the
+console's final stereo render mix and converts it from planar floating-point
+samples into the descriptor-selected signed PCM container. UAC1 sample-rate
+control is endpoint-based; UAC2 follows the terminal's clock graph and uses
+AudioControl clock requests. Asynchronous devices use their explicit feedback
+endpoint to choose each packet's frame count.
 
-For a device connected during boot, the plugin waits for startup to settle,
-validates the cached descriptors and USB topology, and re-enumerates only the
-matching root port. It refuses this operation unless exactly one compatible
-device is found and that device is the only physical device in its controller
-pool. It never resets an entire USB controller. A notification is displayed
-after the first successful audio transfer and when the device disconnects.
+The render callback only publishes PCM into a bounded ring. Two four-packet
+OUT slots—and two feedback-IN slots when needed—are replenished from USB
+completion in the controller's serialized execution domain. The plugin does
+not reset a USB controller or port. A notification is displayed after the
+first successful audio transfer and when the device disconnects. On physical
+removal, static transfer storage is reused only after all submitted transfers
+have completed or been cancelled. Re-arm checks are rate-limited and bounded;
+failure to drain within five seconds leaves the driver stopped until reboot.
+Repeated Sabrent-to-AirPods and AirPods-to-Sabrent switching has been validated
+on hardware without rebooting the console.
 
 ## Install
 
