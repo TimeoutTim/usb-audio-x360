@@ -78,6 +78,10 @@ object or hardware frame counter to get a different schedule.
    domain, only after transfer ownership and every endpoint-close request have
    drained. A generation tag alone cannot make a stale device pointer or DMA
    buffer safe. A timeout remains stopped and retains all storage.
+7. **Admission:** maintain one playback owner in the same serialized USB domain.
+   Ignore secondary playback interfaces without parsing, opening endpoints, or
+   changing plugin-owned driver state. Keep admission closed throughout removal
+   and reopen it only after transport cleanup has fully re-armed.
 
 Keep audio algorithm state separate from this adapter. Descriptor parsing,
 clock selection, feedback decoding, sample packing and packet timing should
@@ -267,6 +271,12 @@ duplicate close completion, one-shot finalization, and zero-endpoint cleanup.
 They do not execute Xbox DPCs; the ordering used by the adapter comes from the
 kernel audit and the hardware results below.
 
+The single-device admission tests additionally cover rejected secondary claims,
+unrelated secondary removal, admission blocked throughout drain, one-shot drain
+completion, and a fresh claim after re-arm. The policy intentionally does not
+promote a secondary device that was already enumerated while another DAC owned
+the slot; it must be replugged to produce a new add callback.
+
 **Hardware gates, in order:**
 
 1. Repeat the existing one-batch test through the adapter; verify the recorded
@@ -299,6 +309,14 @@ once on processor 2 at IRQL 2, and reported no cleanup error. SPACETOUCH reopene
 after the first removal, and AirPods Max streamed successfully after the two UAC1
 cycles. Aurora and XBDM remained responsive. Shared-controller and port resets
 remain prohibited.
+
+Simultaneous-device validation used SPACETOUCH as the active UAC1 device and
+AirPods Max as a secondary. Connecting and removing AirPods did not change the
+selected class, restart setup, open feedback, invoke plugin cleanup, or interrupt
+SPACETOUCH playback. With both connected again, removing the active device
+completed bounded cleanup while the already-enumerated AirPods remained
+unclaimed; the console stayed responsive. This validates isolation, not
+concurrent playback or automatic secondary promotion.
 
 The prior isolated successes are useful evidence, not a substitute for these
 contracts. No further hardware variation is justified merely by changing a

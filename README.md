@@ -82,6 +82,14 @@ UAC1-to-UAC2 switch have passed this cleanup path without rebooting. The plugin
 never resets a USB controller or port, so removal cannot disrupt another USB
 device that contains the console's softmod.
 
+Only one USB audio playback interface is claimed at a time. If multiple DACs
+are connected, the first compatible interface enumerated remains the active
+device and every additional interface stays on the kernel's normal unsupported
+device path; the plugin does not open its endpoints or modify its driver state.
+Connecting or removing an ignored DAC therefore cannot disturb active playback.
+If the active DAC is removed, an already-connected secondary is not promoted
+automatically—unplug and reconnect the desired DAC after cleanup completes.
+
 ## Install
 
 1. Build `bin/usb_audio360.xex` or obtain a release binary.

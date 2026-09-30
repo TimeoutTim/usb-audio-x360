@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "audio.h"
+#include "device_claim_gate.h"
 #include "xbox_usb_transport.h"
 #include "detour.h"
 
@@ -134,6 +135,7 @@ static PowerPcDetour g_add_detour;
 static PowerPcDetour g_remove_detour;
 static DriverExtension g_extension;
 static volatile DeviceHandle* g_playback_handle = 0;
+static usb_transport::DeviceClaimGate g_device_gate;
 static AudioHostApi g_audio_api;
 
 template <typename T>
@@ -166,35 +168,50 @@ static bool ProfileForHandle(DeviceHandle* handle, AudioProfile* profile) {
 }
 
 static int AddDeviceCompleteHook(DeviceHandle* handle, int status) {
+  // The first compatible playback interface owns the only plugin slot. A
+  // secondary DAC/interface is left entirely to the kernel's normal path.
+  if (status == 0 || !g_device_gate.available())
+    return g_add_detour.Original<AddDeviceCompleteFn>()(handle, status);
+
   AudioProfile profile;
-  if (status != 0 && !g_playback_handle &&
-      ProfileForHandle(handle, &profile) &&
-      UsbTransportAttach(handle)) {
+  if (ProfileForHandle(handle, &profile)) {
+    if (!g_device_gate.Activate(handle))
+      return g_add_detour.Original<AddDeviceCompleteFn>()(handle, status);
+    if (!UsbTransportAttach(handle)) {
+      g_device_gate.CancelActivation(handle);
+      return g_add_detour.Original<AddDeviceCompleteFn>()(handle, status);
+    }
     UsbAudioDiagnostic[0] = profile.audio_class_version;
     memset(&g_extension, 0, sizeof(g_extension));
     g_extension.device_handle = handle;
     g_extension.interface_number = profile.interface_number;
     g_extension.interrupt_trb.flags = 1;
     handle->driver = &g_extension;
+    g_audio_api.profile = profile;
+    InterlockedExchange((volatile LONG*)&g_playback_handle, (LONG)handle);
     int result = g_add_detour.Original<AddDeviceCompleteFn>()(handle, 0);
     // This internal completion routine does not expose a documented
     // NTSTATUS-style success contract. The established working path claims the
     // interface after forcing the completion status to zero and preserves its
     // return value only for the caller.
-    g_audio_api.profile = profile;
-    g_playback_handle = handle;
     return result;
   }
   return g_add_detour.Original<AddDeviceCompleteFn>()(handle, status);
 }
 
+static void DeviceRearmComplete() {
+  // Invoked only after transport ownership has drained and reset, in the same
+  // USB DPC domain that serializes add/remove callbacks.
+  g_device_gate.CompleteRemoval();
+}
+
 static LONG RemoveDeviceCompleteHook(DeviceHandle* handle) {
-  if (handle && handle == g_playback_handle) {
+  if (handle && g_device_gate.BeginRemoval(handle)) {
     UsbRemoveCompleteRoutine remove_complete =
         (UsbRemoveCompleteRoutine)
             g_remove_detour.Original<RemoveDeviceCompleteFn>();
-    UsbTransportDetach(handle, remove_complete);
-    g_playback_handle = 0;
+    UsbTransportDetach(handle, remove_complete, DeviceRearmComplete);
+    InterlockedExchange((volatile LONG*)&g_playback_handle, 0);
     AudioDeviceRemoved();
     return 0;
   }

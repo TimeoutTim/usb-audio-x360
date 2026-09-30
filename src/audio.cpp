@@ -1412,7 +1412,7 @@ static void DebugInitialize() {
 }  // namespace
 
 BOOL AudioInitialize(const AudioHostApi* api) {
-  UsbAudioDiagnostic[63] = 0x5541434c;  // Asynchronous endpoint cleanup.
+  UsbAudioDiagnostic[63] = 0x5541434d;  // Single-owner device admission.
 #if USB_AUDIO360_DEBUG_API
   UsbAudioDiagnostic[63] = 0x55414342;
 #endif

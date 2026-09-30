@@ -42,6 +42,7 @@ static DWORD g_processor = 0;
 static usb_transport::Ownership g_ownership;
 static usb_transport::CleanupLifecycle g_cleanup;
 static UsbRemoveCompleteRoutine g_remove_complete = 0;
+static UsbRearmCompleteRoutine g_rearm_complete = 0;
 static DWORD g_default_endpoint = 0;
 static DWORD g_data_endpoints[2] = {0, 0};
 static unsigned g_data_endpoint_count = 0;
@@ -153,6 +154,7 @@ BOOL UsbTransportAttach(void* handle) {
   g_data_endpoints[0] = g_data_endpoints[1] = 0;
   g_data_endpoint_count = 0;
   g_remove_complete = 0;
+  g_rearm_complete = 0;
   g_handle = handle;
   return TRUE;
 }
@@ -179,8 +181,9 @@ LONG __cdecl CloseComplete(DWORD request, LONG status) {
 }
 
 BOOL UsbTransportDetach(void* handle,
-                        UsbRemoveCompleteRoutine remove_complete) {
-  if (handle != g_handle || !remove_complete) return FALSE;
+                        UsbRemoveCompleteRoutine remove_complete,
+                        UsbRearmCompleteRoutine rearm_complete) {
+  if (handle != g_handle || !remove_complete || !rearm_complete) return FALSE;
   InterlockedExchange(&g_stopped, 1);
   if (!InDomain()) {
     UsbAudioCleanupDiagnostic[15] = 0xe304;
@@ -194,6 +197,7 @@ BOOL UsbTransportDetach(void* handle,
   UsbAudioCleanupDiagnostic[4] = g_ownership.pending();
   UsbAudioCleanupDiagnostic[7] = Context();
   g_remove_complete = remove_complete;
+  g_rearm_complete = rearm_complete;
 
   unsigned count = 0;
   for (unsigned i = 0; i < g_data_endpoint_count; ++i) {
@@ -259,6 +263,9 @@ VOID RearmInDomain(void*, void* context, void*, void*) {
   InterlockedExchange(&g_stopped, 0);
   UsbAudioDiagnostic[60] = 0;
   UsbAudioCleanupDiagnostic[0] = 2;
+  UsbRearmCompleteRoutine rearm_complete = g_rearm_complete;
+  g_rearm_complete = 0;
+  rearm_complete();
   r->result = 0;
 }
 
