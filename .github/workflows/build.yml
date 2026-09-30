@@ -1,0 +1,100 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test and build XEX
+    runs-on: [self-hosted, Linux, X64, xbox360-xdk]
+    timeout-minutes: 30
+    env:
+      XDK_INSTALLER: /opt/xbox360/XBOX360 SDK 21256.3.exe
+      XEXTOOL: /opt/xbox360/xextool.exe
+      USB_AUDIO360_RUNTIME: /var/cache/usb-audio360
+      ASAN_OPTIONS: detect_leaks=0
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Verify private toolchain mounts
+        shell: bash
+        run: |
+          test -r "$XDK_INSTALLER"
+          test -r "$XEXTOOL"
+
+      - name: Run portable tests
+        shell: bash
+        run: |
+          bash tools/test_uac.sh
+          python3 -m unittest tests/debug_client_test.py
+
+      - name: Build Xbox 360 plugin
+        shell: bash
+        run: bash tools/build_plugin.sh
+
+      - name: Record artifact checksum
+        shell: bash
+        run: |
+          test -s bin/usb_audio360.xex
+          cd bin
+          sha256sum usb_audio360.xex > usb_audio360.sha256
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: usb-audio360-${{ github.sha }}
+          path: |
+            bin/usb_audio360.xex
+            bin/usb_audio360.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish tagged release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download validated build
+        uses: actions/download-artifact@v8
+        with:
+          name: usb-audio360-${{ github.sha }}
+          path: release
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          (cd release && sha256sum --check usb_audio360.sha256)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" \
+              release/usb_audio360.xex \
+              release/usb_audio360.sha256 \
+              --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              release/usb_audio360.xex \
+              release/usb_audio360.sha256 \
+              --verify-tag \
+              --generate-notes \
+              --title "$GITHUB_REF_NAME"
+          fi
