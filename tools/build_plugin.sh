@@ -96,6 +96,8 @@ rm -f "$build_dir"/*.obj "$build_dir"/*.pe "$build_dir"/*.xex \
 cp "$project_root/src/driver.cpp" "$build_dir/driver.cpp"
 cp "$project_root/src/audio.cpp" "$build_dir/audio.cpp"
 cp "$project_root/src/audio.h" "$build_dir/audio.h"
+cp "$project_root/src/diagnostics.cpp" "$build_dir/diagnostics.cpp"
+cp "$project_root/src/diagnostics.h" "$build_dir/diagnostics.h"
 cp "$project_root/src/xbox_usb_transport.h" "$build_dir/xbox_usb_transport.h"
 cp "$project_root/src/xbox_usb_transport.cpp" "$build_dir/xbox_usb_transport.cpp"
 cp "$project_root/src/transfer_ownership.h" "$build_dir/transfer_ownership.h"
@@ -137,6 +139,7 @@ compile() {
 
 compile driver.cpp driver.obj
 compile audio.cpp audio.obj
+compile diagnostics.cpp diagnostics.obj
 compile xbox_usb_transport.cpp xbox_usb_transport.obj
 compile uac_descriptors.cpp uac_descriptors.obj
 compile uac_clock.cpp uac_clock.obj
@@ -148,6 +151,7 @@ link_command+="/libpath:$wine_xdk\\lib\\xbox "
 link_command+="/map:$wine_build\\usb_audio360.map "
 link_command+="/out:$wine_build\\usb_audio360.pe "
 link_command+="$wine_build\\driver.obj $wine_build\\audio.obj "
+link_command+="$wine_build\\diagnostics.obj "
 link_command+="$wine_build\\xbox_usb_transport.obj "
 link_command+="$wine_build\\uac_descriptors.obj $wine_build\\uac_clock.obj "
 link_command+="$wine_build\\detour.obj xapilib.lib xboxkrnl.lib libcMT.lib"

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "audio.h"
+#include "diagnostics.h"
 #include "xbox_usb_transport.h"
 #include "isoch_result.h"
 #include "stream_test_budget.h"
@@ -148,6 +149,7 @@ static volatile LONG g_stopping = 0;
 static volatile LONG g_bridge_started = 0;
 static volatile LONG g_notification_event = kNotificationNone;
 static volatile LONG g_notification_shown = 0;
+static volatile LONG g_diagnostic_streaming = 0;
 static volatile LONG g_volume_percent = 100;
 static volatile LONG g_volume_feedback_pending = 0;
 static volatile LONG g_rearm_pending = 0;
@@ -292,6 +294,7 @@ static void ResetDeviceState() {
   InterlockedExchange(&g_streaming, 0);
   InterlockedExchange(&g_stopping, 0);
   InterlockedExchange(&g_bridge_started, 0);
+  InterlockedExchange(&g_diagnostic_streaming, 0);
   InterlockedExchange(&g_volume_feedback_pending, 0);
   InterlockedExchange(&g_test_cancelled, 0);
 #if USB_AUDIO360_DEBUG_API
@@ -492,7 +495,11 @@ static void QueueControl(BYTE type, BYTE request, WORD value, WORD index,
 
 static void SetupFailed(DWORD error) {
   UsbAudioDiagnostic[38] = error;
-  InterlockedExchange(&g_stopping, 1);
+  if (InterlockedCompareExchange(&g_stopping, 1, 0) == 0)
+    DiagnosticsFailure(error, g_setup_stage, UsbAudioDiagnostic[33],
+                       UsbAudioDiagnostic[34], g_control_status,
+                       g_control.actual_length, g_clock.error(),
+                       g_profile, g_format);
   g_clock.Cancel();
   // Outstanding TRBs/buffers stay allocated and are never recycled this boot.
 }
@@ -502,6 +509,7 @@ static bool SelectProfile(DWORD received) {
   // retains unsupported candidates so selection can rank compatible profiles.
   uac::Format formats[32];
   size_t count = 0;
+  DiagnosticsConfiguration(g_configuration_descriptor, received);
   if (received < 9 || Read16(g_configuration_descriptor + 2) != received)
     return false;
   if (uac::Discover(g_configuration_descriptor, received, formats, 32,
@@ -545,6 +553,7 @@ static bool SelectProfile(DWORD received) {
     }
     UsbAudioDiagnostic[39] = (f.interface_number << 24) | (f.alternate << 16) |
                              (f.sample_bytes << 8) | f.valid_bits;
+    DiagnosticsSelected(g_profile, g_format);
     return true;
   }
   return false;
@@ -571,8 +580,7 @@ static LONG __cdecl FeedbackComplete(DWORD transfer, DWORD* statuses,
     else {
       ++UsbAudioDiagnostic[14];
 #if USB_AUDIO360_TEST_STAGE == 0
-      UsbAudioDiagnostic[38] = 0xe010;
-      InterlockedExchange(&g_stopping, 1);
+      if (!g_stopping) SetupFailed(0xe010);
 #endif
     }
 #endif
@@ -645,8 +653,7 @@ static LONG __cdecl IsochComplete(DWORD transfer, DWORD* statuses,
     else {
       ++UsbAudioDiagnostic[10];
 #if USB_AUDIO360_TEST_STAGE == 0
-      UsbAudioDiagnostic[38] = 0xe00f;
-      InterlockedExchange(&g_stopping, 1);
+      if (!g_stopping) SetupFailed(0xe00f);
 #endif
     }
   }
@@ -661,6 +668,9 @@ static LONG __cdecl IsochComplete(DWORD transfer, DWORD* statuses,
     InterlockedCompareExchange(&g_notification_event,
                                kNotificationConnected,
                                kNotificationNone);
+  if (successful && active &&
+      InterlockedCompareExchange(&g_diagnostic_streaming, 1, 0) == 0)
+    DiagnosticsStreaming();
 
 #if USB_AUDIO360_TEST_STAGE == 5
   if (SubmitBoundedSlot(0, slot)) return 0;
@@ -808,8 +818,7 @@ static bool SubmitContinuousSlot(unsigned direction, int slot) {
   LONG status = UsbTransportIsochInDomain(g_io_handle, trb, lengths);
   if (status < 0) {
     --UsbAudioDiagnostic[4 + direction];
-    UsbAudioDiagnostic[38] = (DWORD)status;
-    InterlockedExchange(&g_stopping, 1);
+    SetupFailed((DWORD)status);
     InterlockedExchange(busy, 0);
     return false;
   }
@@ -1482,6 +1491,7 @@ VOID AudioDeviceRemoved() {
   g_removed_at = GetTickCount();
   g_rearm_last_attempt = g_removed_at;
   InterlockedExchange(&g_rearm_pending, 1);
+  DiagnosticsDisconnected();
   InterlockedExchange(&g_notification_event, was_connected
       ? kNotificationDisconnected : kNotificationNone);
 }

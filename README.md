@@ -115,6 +115,23 @@ ranges from 0% to 100% and resets to 100% when the console restarts. A short
 audio cue plays at the new level after each change, providing audible feedback
 without leaving a long-lived notification on screen.
 
+## Device diagnostics
+
+The plugin appends connection diagnostics to `usb_audio360.log` in the same
+directory as `usb_audio360.xex`. If a device does not work, reproduce the
+problem once, shut down the console, and include that log with the report.
+
+The log records the USB vendor/product and version IDs, AudioStreaming
+interface identity, admission or rejection reason, complete configuration
+descriptor, every discovered playback format, the selected UAC profile and
+endpoints, setup request failures, stream start, and disconnect. It does not
+record audio samples, USB serial-number strings, or other user data. Filesystem
+I/O runs only on the low-priority notification thread; USB callbacks and the
+real-time audio path only enqueue bounded in-memory records.
+
+To prevent unbounded storage use, the current log rotates at 256 KiB. At most
+one previous file is retained as `usb_audio360.log.old`.
+
 ## Warning
 
 Best effort has been made to ensure this plugin fails gracefully; however,

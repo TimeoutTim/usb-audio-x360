@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "audio.h"
+#include "diagnostics.h"
 #include "device_claim_gate.h"
 #include "playback_profile.h"
 #include "uac_descriptors.h"
@@ -255,59 +256,130 @@ static bool ReenumerateBootDevice() {
   return true;
 }
 
-static bool ProfileForHandle(DeviceHandle* handle, AudioProfile* profile) {
-  if (!handle || !profile || !g_get_interface_descriptor) return false;
+static bool ProfileForHandle(DeviceHandle* handle, AudioProfile* profile,
+                             BYTE* rejection) {
+  if (rejection) *rejection = 0;
+  if (!handle || !profile || !g_get_interface_descriptor) {
+    if (rejection) *rejection = 1;
+    return false;
+  }
   UsbInterfaceDescriptor* interface_descriptor =
       g_get_interface_descriptor(handle);
-  if (!interface_descriptor ||
-      interface_descriptor->alternate_setting != 0 ||
-      interface_descriptor->interface_class != 1 ||
-      interface_descriptor->interface_subclass != 2) {
+  if (!interface_descriptor) {
+    if (rejection) *rejection = 2;
+    return false;
+  }
+  if (interface_descriptor->alternate_setting != 0) {
+    if (rejection) *rejection = 3;
+    return false;
+  }
+  if (interface_descriptor->interface_class != 1) {
+    if (rejection) *rejection = 4;
+    return false;
+  }
+  if (interface_descriptor->interface_subclass != 2) {
+    if (rejection) *rejection = 5;
     return false;
   }
   BYTE protocol = interface_descriptor->interface_protocol;
-  if (protocol != 0 && protocol != 0x20) return false;
+  if (protocol != 0 && protocol != 0x20) {
+    if (rejection) *rejection = 6;
+    return false;
+  }
   // First test supports only the OHCI path whose control-length contract was
   // inspected. Do not assume high-speed/EHCI endpoint or completion semantics.
   DWORD controller = *((BYTE*)handle + 8) & 3;
   BYTE* hcd = ((BYTE**)kUsbHcdTable)[controller];
-  if (!hcd || !(hcd[0x96] & 2)) return false;
+  if (!hcd) {
+    if (rejection) *rejection = 7;
+    return false;
+  }
+  if (!(hcd[0x96] & 2)) {
+    if (rejection) *rejection = 8;
+    return false;
+  }
   memset(profile, 0, sizeof(*profile));
   profile->audio_class_version = protocol == 0x20 ? 2 : 1;
   profile->interface_number = interface_descriptor->interface_number;
   return true;
 }
 
+static void RecordDevice(DeviceHandle* handle, int status,
+                         UsbAudioDeviceDecision decision, BYTE rejection) {
+  UsbInterfaceDescriptor* interface_descriptor =
+      handle && g_get_interface_descriptor
+          ? g_get_interface_descriptor(handle) : 0;
+  // Only AudioStreaming interfaces are relevant. Avoid filling the bounded
+  // queue with unrelated failed USB interfaces on composite devices.
+  if (!interface_descriptor || interface_descriptor->interface_class != 1 ||
+      interface_descriptor->interface_subclass != 2) return;
+  UsbDeviceDescriptor* device_descriptor =
+      handle && g_get_device_descriptor ? g_get_device_descriptor(handle) : 0;
+  UsbAudioDeviceObservation observation;
+  memset(&observation, 0, sizeof(observation));
+  if (device_descriptor) {
+    observation.vendor_id = device_descriptor->vendor_id;
+    observation.product_id = device_descriptor->product_id;
+    observation.usb_version = device_descriptor->usb_version;
+    observation.device_version = device_descriptor->device_version;
+    observation.device_class = device_descriptor->device_class;
+    observation.device_subclass = device_descriptor->device_subclass;
+    observation.device_protocol = device_descriptor->device_protocol;
+    observation.configuration_count = device_descriptor->configuration_count;
+  }
+  observation.interface_number = interface_descriptor->interface_number;
+  observation.alternate_setting = interface_descriptor->alternate_setting;
+  observation.interface_class = interface_descriptor->interface_class;
+  observation.interface_subclass = interface_descriptor->interface_subclass;
+  observation.interface_protocol = interface_descriptor->interface_protocol;
+  observation.endpoint_count = interface_descriptor->endpoint_count;
+  observation.controller = handle ? (*((BYTE*)handle + 8) & 3) : 0xff;
+  observation.rejection = rejection;
+  observation.add_status = status;
+  observation.decision = decision;
+  DiagnosticsObserveDevice(observation);
+}
+
 static int AddDeviceCompleteHook(DeviceHandle* handle, int status) {
   // The first compatible playback interface owns the only plugin slot. A
   // secondary DAC/interface is left entirely to the kernel's normal path.
-  if (status == 0 || !g_device_gate.available())
+  if (status == 0)
     return g_add_detour.Original<AddDeviceCompleteFn>()(handle, status);
 
   AudioProfile profile;
-  if (ProfileForHandle(handle, &profile)) {
-    if (!g_device_gate.Activate(handle))
-      return g_add_detour.Original<AddDeviceCompleteFn>()(handle, status);
-    if (!UsbTransportAttach(handle)) {
-      g_device_gate.CancelActivation(handle);
-      return g_add_detour.Original<AddDeviceCompleteFn>()(handle, status);
-    }
-    UsbAudioDiagnostic[0] = profile.audio_class_version;
-    memset(&g_extension, 0, sizeof(g_extension));
-    g_extension.device_handle = handle;
-    g_extension.interface_number = profile.interface_number;
-    g_extension.interrupt_trb.flags = 1;
-    handle->driver = &g_extension;
-    g_audio_api.profile = profile;
-    InterlockedExchange((volatile LONG*)&g_playback_handle, (LONG)handle);
-    int result = g_add_detour.Original<AddDeviceCompleteFn>()(handle, 0);
-    // This internal completion routine does not expose a documented
-    // NTSTATUS-style success contract. The established working path claims the
-    // interface after forcing the completion status to zero and preserves its
-    // return value only for the caller.
-    return result;
+  BYTE rejection = 0;
+  if (!ProfileForHandle(handle, &profile, &rejection)) {
+    RecordDevice(handle, status, kDeviceRejectedProfile, rejection);
+    return g_add_detour.Original<AddDeviceCompleteFn>()(handle, status);
   }
-  return g_add_detour.Original<AddDeviceCompleteFn>()(handle, status);
+  if (!g_device_gate.available()) {
+    RecordDevice(handle, status, kDeviceSlotBusy, 0);
+    return g_add_detour.Original<AddDeviceCompleteFn>()(handle, status);
+  }
+  if (!g_device_gate.Activate(handle)) {
+    RecordDevice(handle, status, kDeviceSlotBusy, 0);
+    return g_add_detour.Original<AddDeviceCompleteFn>()(handle, status);
+  }
+  if (!UsbTransportAttach(handle)) {
+    RecordDevice(handle, status, kDeviceTransportRejected, 0);
+    g_device_gate.CancelActivation(handle);
+    return g_add_detour.Original<AddDeviceCompleteFn>()(handle, status);
+  }
+  RecordDevice(handle, status, kDeviceClaimed, 0);
+  UsbAudioDiagnostic[0] = profile.audio_class_version;
+  memset(&g_extension, 0, sizeof(g_extension));
+  g_extension.device_handle = handle;
+  g_extension.interface_number = profile.interface_number;
+  g_extension.interrupt_trb.flags = 1;
+  handle->driver = &g_extension;
+  g_audio_api.profile = profile;
+  InterlockedExchange((volatile LONG*)&g_playback_handle, (LONG)handle);
+  int result = g_add_detour.Original<AddDeviceCompleteFn>()(handle, 0);
+  // This internal completion routine does not expose a documented
+  // NTSTATUS-style success contract. The established working path claims the
+  // interface after forcing the completion status to zero and preserves its
+  // return value only for the caller.
+  return result;
 }
 
 static void DeviceRearmComplete() {
@@ -372,6 +444,7 @@ static DWORD WINAPI NotificationWorker(void*) {
   for (;;) {
     PollVolumeChord();
     AudioNotificationTick();
+    DiagnosticsTick();
     Sleep(100);
   }
 }
@@ -392,7 +465,7 @@ static bool StartWorker(LPTHREAD_START_ROUTINE entry, int priority,
 
 }  // namespace
 
-extern "C" BOOL APIENTRY DllMain(HANDLE, DWORD reason, LPVOID) {
+extern "C" BOOL APIENTRY DllMain(HANDLE module, DWORD reason, LPVOID) {
   if (reason != DLL_PROCESS_ATTACH) return TRUE;
 
   HANDLE kernel = GetModuleHandleA("xboxkrnl.exe");
@@ -401,6 +474,7 @@ extern "C" BOOL APIENTRY DllMain(HANDLE, DWORD reason, LPVOID) {
       version->build != kSupportedKernel) {
     return TRUE;
   }
+  DiagnosticsInitialize(module, version->build);
 
   if (!Resolve(kernel, 759, &g_get_device_descriptor) ||
       !Resolve(kernel, 740, &g_add_device_complete) ||
