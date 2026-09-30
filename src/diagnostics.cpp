@@ -9,6 +9,17 @@
 
 namespace {
 
+struct KernelString {
+  WORD length;
+  WORD maximum_length;
+  char* buffer;
+};
+
+extern "C" LONG ObCreateSymbolicLink(KernelString* link,
+                                      KernelString* device);
+extern "C" VOID RtlInitAnsiString(KernelString* destination,
+                                   const char* source);
+
 const DWORD kDiagnosticSchema = 1;
 const DWORD kMaximumLogBytes = 256 * 1024;
 const unsigned kEventSlots = 8;
@@ -44,6 +55,22 @@ static volatile LONG g_dropped = 0;
 static char g_log_path[MAX_PATH];
 static char g_old_log_path[MAX_PATH];
 static bool g_initialized = false;
+static const char kFallbackLogPath[] = "Usb:\\Plugins\\usb_audio360.log";
+static const char kDiagnosticDrive[] = "UsbAudio360:";
+static const char kDiagnosticLink[] = "\\System??\\UsbAudio360:";
+
+struct DevicePathAlias {
+  const char* device;
+  const char* drive;
+};
+
+static const DevicePathAlias kDevicePathAliases[] = {
+  {"\\Device\\Mass0", "Usb:"},
+  {"\\Device\\Harddisk0\\Partition1", "Hdd:"},
+  {"\\Device\\BuiltInMuSfc", "OnBoardMU:"},
+  {"\\Device\\Mu0", "MemUnit0:"},
+  {"\\Device\\Mu1", "MemUnit1:"},
+};
 
 struct XboxUnicodeString {
   WORD length;
@@ -92,6 +119,14 @@ static void RotateIfNeeded() {
   if (size < 0 || (DWORD)size < kMaximumLogBytes) return;
   remove(g_old_log_path);
   rename(g_log_path, g_old_log_path);
+}
+
+static bool SetLogPath(const char* path) {
+  if (!path || strlen(path) + 5 > sizeof(g_old_log_path)) return false;
+  strcpy(g_log_path, path);
+  strcpy(g_old_log_path, path);
+  strcat(g_old_log_path, ".old");
+  return true;
 }
 
 static const char* DecisionName(DWORD decision) {
@@ -219,31 +254,76 @@ static void WriteEvent(FILE* file, const Event& event) {
 
 void DiagnosticsInitialize(HANDLE module, WORD kernel_build) {
   memset(g_slots, 0, sizeof(g_slots));
-  memset(g_log_path, 0, sizeof(g_log_path));
-  const LoaderEntryPrefix* entry = (const LoaderEntryPrefix*)module;
-  if (!entry || !entry->full_name.buffer || !entry->full_name.length ||
-      (entry->full_name.length & 1) ||
-      entry->full_name.length > (sizeof(g_log_path) - 1) * sizeof(WCHAR))
-    return;
-  DWORD length = entry->full_name.length / sizeof(WCHAR);
-  for (DWORD index = 0; index < length; ++index) {
-    WCHAR value = entry->full_name.buffer[index];
-    if (value > 0x7f) return;
-    g_log_path[index] = (char)value;
-  }
-  g_log_path[length] = 0;
-  char* separator = 0;
-  for (char* cursor = g_log_path; *cursor; ++cursor)
-    if (*cursor == '\\' || *cursor == '/') separator = cursor;
-  if (!separator) return;
-  separator[1] = 0;
-  const char log_name[] = "usb_audio360.log";
-  if (strlen(g_log_path) + sizeof(log_name) > sizeof(g_log_path)) return;
-  strcat(g_log_path, log_name);
-  strcpy(g_old_log_path, g_log_path);
-  if (strlen(g_old_log_path) + 5 > sizeof(g_old_log_path)) return;
-  strcat(g_old_log_path, ".old");
+  SetLogPath(kFallbackLogPath);
   g_initialized = true;
+  const LoaderEntryPrefix* entry = (const LoaderEntryPrefix*)module;
+  if (entry && entry->full_name.buffer && entry->full_name.length &&
+      !(entry->full_name.length & 1) &&
+      entry->full_name.length <=
+          (sizeof(g_log_path) - 1) * sizeof(WCHAR)) {
+    char loaded_path[MAX_PATH];
+    memset(loaded_path, 0, sizeof(loaded_path));
+    DWORD length = entry->full_name.length / sizeof(WCHAR);
+    bool ascii = true;
+    for (DWORD index = 0; index < length; ++index) {
+      WCHAR value = entry->full_name.buffer[index];
+      if (value > 0x7f) {
+        ascii = false;
+        break;
+      }
+      loaded_path[index] = (char)value;
+    }
+    if (ascii) {
+      loaded_path[length] = 0;
+      const char* source = loaded_path;
+      const char* prefix = 0;
+      char device_root[MAX_PATH];
+      memset(device_root, 0, sizeof(device_root));
+      for (unsigned index = 0;
+           index < sizeof(kDevicePathAliases) / sizeof(kDevicePathAliases[0]);
+           ++index) {
+        size_t device_length = strlen(kDevicePathAliases[index].device);
+        if (strncmp(loaded_path, kDevicePathAliases[index].device,
+                    device_length) == 0 &&
+            (loaded_path[device_length] == '\\' ||
+             loaded_path[device_length] == '/' ||
+             loaded_path[device_length] == 0)) {
+          if (device_length + 2 <= sizeof(device_root)) {
+            memcpy(device_root, loaded_path, device_length);
+            device_root[device_length] = '\\';
+            KernelString link;
+            KernelString device;
+            RtlInitAnsiString(&link, kDiagnosticLink);
+            RtlInitAnsiString(&device, device_root);
+            ObCreateSymbolicLink(&link, &device);
+            prefix = kDiagnosticDrive;
+          } else {
+            prefix = kDevicePathAliases[index].drive;
+          }
+          source = loaded_path + device_length;
+          break;
+        }
+      }
+      char resolved[MAX_PATH];
+      memset(resolved, 0, sizeof(resolved));
+      size_t prefix_length = prefix ? strlen(prefix) : 0;
+      if (prefix_length + strlen(source) + 1 <= sizeof(resolved)) {
+        if (prefix) strcpy(resolved, prefix);
+        strcat(resolved, source);
+        char* separator = 0;
+        for (char* cursor = resolved; *cursor; ++cursor)
+          if (*cursor == '\\' || *cursor == '/') separator = cursor;
+        const char log_name[] = "usb_audio360.log";
+        if (separator) {
+          separator[1] = 0;
+          if (strlen(resolved) + sizeof(log_name) <= sizeof(resolved)) {
+            strcat(resolved, log_name);
+            SetLogPath(resolved);
+          }
+        }
+      }
+    }
+  }
   DWORD values[2] = {kDiagnosticSchema, kernel_build};
   Queue(kEventStartup, values, 2, 0, 0);
 }
@@ -298,6 +378,11 @@ void DiagnosticsTick() {
   if (!pending) return;
   RotateIfNeeded();
   FILE* file = fopen(g_log_path, "ab");
+  if (!file && strcmp(g_log_path, kFallbackLogPath) != 0) {
+    SetLogPath(kFallbackLogPath);
+    RotateIfNeeded();
+    file = fopen(g_log_path, "ab");
+  }
   if (!file) return;
   LONG dropped = InterlockedExchange(&g_dropped, 0);
   if (dropped)
