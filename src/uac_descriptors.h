@@ -11,6 +11,7 @@ namespace uac {
 typedef unsigned char Byte;
 enum Result { kOk, kMalformed, kCapacityExceeded };
 enum Sync { kNoSync, kAsynchronous, kAdaptive, kSynchronous };
+enum Direction { kPlayback, kCapture };
 
 struct Endpoint {
   Byte address;
@@ -30,6 +31,7 @@ struct Format {
   Byte channels;
   Byte sample_bytes;
   Byte valid_bits;
+  Direction direction;
   Sync sync;
   Endpoint data;
   Endpoint feedback;

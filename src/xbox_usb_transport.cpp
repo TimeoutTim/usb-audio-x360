@@ -44,10 +44,10 @@ static usb_transport::CleanupLifecycle g_cleanup;
 static UsbRemoveCompleteRoutine g_remove_complete = 0;
 static UsbRearmCompleteRoutine g_rearm_complete = 0;
 static DWORD g_default_endpoint = 0;
-static DWORD g_data_endpoints[2] = {0, 0};
+static DWORD g_data_endpoints[3] = {0, 0, 0};
 static unsigned g_data_endpoint_count = 0;
-static CloseRequest g_close_requests[3];
-static bool g_close_default[3] = {false, false, false};
+static CloseRequest g_close_requests[4];
+static bool g_close_default[4] = {false, false, false, false};
 
 // PCR field verified for the supported retail kernel. Read only, no IRQL change.
 __declspec(naked) DWORD CurrentIrql() {
@@ -97,7 +97,7 @@ VOID Execute(void*, void* context, void*, void*) {
         bool duplicate = false;
         for (unsigned i = 0; i < g_data_endpoint_count; ++i)
           if (g_data_endpoints[i] == endpoint) duplicate = true;
-        if (!duplicate && endpoint && g_data_endpoint_count < 2)
+        if (!duplicate && endpoint && g_data_endpoint_count < 3)
           g_data_endpoints[g_data_endpoint_count++] = endpoint;
       }
       break;
@@ -151,7 +151,7 @@ BOOL UsbTransportAttach(void* handle) {
       g_cleanup.begun() || !InDomain())
     return FALSE;
   g_default_endpoint = 0;
-  g_data_endpoints[0] = g_data_endpoints[1] = 0;
+  memset(g_data_endpoints, 0, sizeof(g_data_endpoints));
   g_data_endpoint_count = 0;
   g_remove_complete = 0;
   g_rearm_complete = 0;
@@ -166,7 +166,7 @@ LONG __cdecl CloseComplete(DWORD request, LONG status) {
     UsbAudioCleanupDiagnostic[15] = 0xe301;
     return 0;
   }
-  for (unsigned i = 0; i < 3; ++i) {
+  for (unsigned i = 0; i < 4; ++i) {
     if (request != (DWORD)&g_close_requests[i]) continue;
     if (!g_cleanup.Complete(i)) {
       UsbAudioCleanupDiagnostic[15] = 0xe302;
@@ -257,7 +257,7 @@ VOID RearmInDomain(void*, void* context, void*, void*) {
   }
   g_handle = 0;
   g_default_endpoint = 0;
-  g_data_endpoints[0] = g_data_endpoints[1] = 0;
+  memset(g_data_endpoints, 0, sizeof(g_data_endpoints));
   g_data_endpoint_count = 0;
   InterlockedExchange(&g_detached, 0);
   InterlockedExchange(&g_stopped, 0);

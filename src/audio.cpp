@@ -10,6 +10,9 @@
 #include "pcm_packet.h"
 #include "playback_pacer.h"
 #include "playback_profile.h"
+#include "capture_profile.h"
+#include "mic_pcm.h"
+#include "mic_packet_policy.h"
 #include "uac_clock.h"
 #include "uac_descriptors.h"
 #include "uac_setup_policy.h"
@@ -63,6 +66,20 @@ const int kFeedbackPacketCount = 4;
 const int kFeedbackRingDepth = 2;
 const int kPcmRingFrames = 4096;
 const int kPcmTargetFrames = 768;
+// 64 ms at 16 kHz: enough to absorb title scheduling jitter without allowing
+// a newly opened voice client to start with a quarter-second of stale audio.
+const int kMicRingSamples = 1024;
+// XHV submits microphone reads in bursts. Keep enough pending requests to
+// bridge those bursts without failing packets back into its microphone proxy.
+const int kVoicePacketDepth = 64;
+const DWORD kVoiceSessionIdleMs = 1000;
+const DWORD kVoicePacketPending = 0x103;
+const DWORD kVoicePacketFailure = 0xc0000001;
+const int kMicPacketCount = 4;
+const int kMicRingDepth = 2;
+const int kMicMaxPacketBytes = 1023;
+const int kMicBufferStride =
+    (kMicPacketCount * kMicMaxPacketBytes + 127) & ~127;
 const int kVolumeFeedbackSamples = 1440;
 const DWORD kRemovalSettleMs = 1000;
 const DWORD kRearmRetryMs = 250;
@@ -153,6 +170,11 @@ static volatile LONG g_diagnostic_streaming = 0;
 static volatile LONG g_volume_percent = 100;
 static volatile LONG g_volume_feedback_pending = 0;
 static volatile LONG g_rearm_pending = 0;
+static volatile LONG g_mic_active = 0;
+static volatile LONG g_mic_healthy = 0;
+static volatile LONG g_mic_write = 0;
+static volatile LONG g_mic_read = 0;
+static volatile LONG g_mic_busy[kMicRingDepth];
 static DWORD g_removed_at = 0;
 static DWORD g_rearm_last_attempt = 0;
 static volatile LONG g_isoch_slot_busy[kIsochRingDepth];
@@ -162,6 +184,9 @@ static volatile LONG g_feedback_busy[kFeedbackRingDepth];
 static uac::PlaybackPacer g_playback_pacer;
 static void* g_io_handle = 0;
 static uac::Format g_format;
+static uac::Format g_capture_format;
+static usb_mic::Decimator48To16 g_mic_decimator;
+static bool g_capture_supported = false;
 static uac::ClockSetup g_clock;
 static uac::ClockRequest g_clock_request;
 static volatile LONG g_control_done = 0;
@@ -172,7 +197,8 @@ enum SetupStage { kHeader, kDescriptor, kConfiguration, kInactive,
                   kClock, kUac1Rate, kUnmute, kActive, kFinished, kOpening,
                   kReadMute, kReadVolume, kVerifyInterface, kVerifyClock,
                   kVerifyMute, kVerifyVolume, kUac1FallbackInactive,
-                  kUac1FallbackRate };
+                  kUac1FallbackRate, kCaptureActive, kCaptureRate,
+                  kVerifyCapture };
 static BYTE g_read_feature_id = 0;
 static BYTE g_read_feature_controls = 0;
 static bool g_uac1_rate_programmed = false;
@@ -212,13 +238,20 @@ static void RecordMiss(unsigned direction, unsigned packet) {
 static UsbControlTrb g_control;
 static UsbIsochTrb g_isoch[kIsochRingDepth];
 static UsbIsochTrb g_feedback_isoch[kFeedbackRingDepth];
+static UsbIsochTrb g_mic_isoch[kMicRingDepth];
 static WORD g_packet_lengths[kIsochRingDepth][kIsochPacketCount];
 static WORD g_feedback_packet_lengths[kFeedbackRingDepth][kFeedbackPacketCount];
+static WORD g_mic_packet_lengths[kMicRingDepth][kMicPacketCount];
 static __declspec(align(128)) BYTE
     g_usb_packets[kIsochRingDepth][kIsochBufferStride];
 static __declspec(align(128)) BYTE
     g_feedback_packets[kFeedbackRingDepth][128];
+static __declspec(align(128)) BYTE
+    g_mic_packets[kMicRingDepth][kMicBufferStride];
 static __declspec(align(128)) LONG g_pcm_ring[kPcmRingFrames][kChannels];
+static __declspec(align(128)) SHORT g_mic_ring[kMicRingSamples];
+static __declspec(align(128)) SHORT g_mic_mono[kMicRingDepth][512];
+static __declspec(align(128)) SHORT g_mic_converted[kMicRingDepth][192];
 static __declspec(align(128)) BYTE g_configuration_descriptor[0x400];
 static __declspec(align(128)) BYTE g_control_data[256];
 static BYTE g_sample_rate[3] = {0x80, 0xBB, 0x00};
@@ -226,11 +259,24 @@ static BYTE g_unmuted = 0;
 static AudioProfile g_profile;
 static RenderMecClient g_mec_client;
 static RenderCaptureBuffer g_render_frame;
+
+struct VoicePacketSlot {
+  // 0 = free, 1 = reserved, 2 = queued, 3 = completion owns the slot.
+  volatile LONG state;
+  volatile DWORD* words;
+  DWORD units;
+  DWORD queued_at;
+  DWORD sequence;
+};
+
+static VoicePacketSlot g_voice_packets[kVoicePacketDepth];
 static void* volatile g_mec_handle = 0;
 static CaptureRenderFrameFn g_capture_render_frame = 0;
 static NotifyQueueUiFn g_notify_queue_ui = 0;
 static LONG g_volume_feedback_remaining = 0;
 static LONG g_volume_feedback_phase = 0;
+static volatile LONG g_voice_packet_sequence = 0;
+static volatile LONG g_voice_last_submit = 0;
 
 static void ResetDeviceState() {
   DWORD marker = UsbAudioDiagnostic[63];
@@ -254,12 +300,15 @@ static void ResetDeviceState() {
   g_io_handle = 0;
   memset(&g_profile, 0, sizeof(g_profile));
   memset(&g_format, 0, sizeof(g_format));
+  memset(&g_capture_format, 0, sizeof(g_capture_format));
   memset(&g_clock_request, 0, sizeof(g_clock_request));
   memset(&g_control, 0, sizeof(g_control));
   memset(g_isoch, 0, sizeof(g_isoch));
   memset(g_feedback_isoch, 0, sizeof(g_feedback_isoch));
+  memset(g_mic_isoch, 0, sizeof(g_mic_isoch));
   memset(g_packet_lengths, 0, sizeof(g_packet_lengths));
   memset(g_feedback_packet_lengths, 0, sizeof(g_feedback_packet_lengths));
+  memset(g_mic_packet_lengths, 0, sizeof(g_mic_packet_lengths));
   memset(g_configuration_descriptor, 0, sizeof(g_configuration_descriptor));
   memset(g_control_data, 0, sizeof(g_control_data));
   g_sample_rate[0] = 0x80;
@@ -270,6 +319,8 @@ static void ResetDeviceState() {
   g_read_feature_controls = 0;
   g_uac1_rate_programmed = false;
   g_uac1_rate_fallback = false;
+  g_capture_supported = false;
+  g_mic_decimator.Reset();
   g_setup_stage = kHeader;
   g_endpoint_phase = 0;
   g_endpoint_phase_time = 0;
@@ -289,6 +340,17 @@ static void ResetDeviceState() {
     InterlockedExchange(&g_isoch_slot_busy[slot], 0);
   for (int slot = 0; slot < kFeedbackRingDepth; ++slot)
     InterlockedExchange(&g_feedback_busy[slot], 0);
+  for (int slot = 0; slot < kMicRingDepth; ++slot)
+    InterlockedExchange(&g_mic_busy[slot], 0);
+  for (int slot = 0; slot < kVoicePacketDepth; ++slot) {
+    g_voice_packets[slot].words = 0;
+    g_voice_packets[slot].units = 0;
+    g_voice_packets[slot].queued_at = 0;
+    g_voice_packets[slot].sequence = 0;
+    InterlockedExchange(&g_voice_packets[slot].state, 0);
+  }
+  InterlockedExchange(&g_voice_packet_sequence, 0);
+  InterlockedExchange(&g_voice_last_submit, 0);
   InterlockedExchange(&g_control_pending, 0);
   InterlockedExchange(&g_control_done, 0);
   InterlockedExchange(&g_streaming, 0);
@@ -296,6 +358,9 @@ static void ResetDeviceState() {
   InterlockedExchange(&g_bridge_started, 0);
   InterlockedExchange(&g_diagnostic_streaming, 0);
   InterlockedExchange(&g_volume_feedback_pending, 0);
+  InterlockedExchange(&g_mic_active, 0);
+  InterlockedExchange(&g_mic_healthy, 0);
+  InterlockedExchange(&g_mic_read, g_mic_write);
   InterlockedExchange(&g_test_cancelled, 0);
 #if USB_AUDIO360_DEBUG_API
   InterlockedExchange(&g_debug_mailbox, 0);
@@ -517,6 +582,12 @@ static bool SelectProfile(DWORD received) {
   size_t selected = 0;
   if (!uac::SelectFullSpeedPlayback(
           formats, count, g_profile.interface_number, &selected)) return false;
+  size_t capture_selected = 0;
+  if (uac::SelectFullSpeedCapture(formats, count, &capture_selected) &&
+      formats[capture_selected].version == 1) {
+    g_capture_format = formats[capture_selected];
+    g_capture_supported = true;
+  }
   {
     const uac::Format& f = formats[selected];
     g_format = f;
@@ -535,9 +606,9 @@ static bool SelectProfile(DWORD received) {
     // Optional writable master mute on a directly linked UAC2 feature unit.
     // Do not issue unsupported controls or assume a fixed entity ID.
     bool in_control = false;
-    for (DWORD o = g_configuration_descriptor[0]; o < received;
-         o += g_configuration_descriptor[o]) {
+    for (DWORD o = g_configuration_descriptor[0]; o + 2 <= received;) {
       const BYTE* d = g_configuration_descriptor + o;
+      if (d[0] < 2 || o + d[0] > received) break;
       if (d[1] == 4)
         in_control = d[2] == f.control_interface && d[3] == 0;
       if (f.version == 2 && in_control && d[1] == 0x24 && d[0] >= 10 &&
@@ -550,6 +621,7 @@ static bool SelectProfile(DWORD received) {
         if (uac::ControlWritable(g_read_feature_controls, 1))
           g_profile.feature_unit_id = d[3];
       }
+      o += d[0];
     }
     UsbAudioDiagnostic[39] = (f.interface_number << 24) | (f.alternate << 16) |
                              (f.sample_bytes << 8) | f.valid_bits;
@@ -681,6 +753,81 @@ static LONG __cdecl IsochComplete(DWORD transfer, DWORD* statuses,
   return 0;
 }
 
+static void PushMicrophoneSamples(const SHORT* samples, unsigned count) {
+  LONG write = g_mic_write;
+  LONG read = g_mic_read;
+  if ((DWORD)(write - read) + count > kMicRingSamples) return;
+  for (unsigned i = 0; i < count; ++i)
+    g_mic_ring[(write + i) & (kMicRingSamples - 1)] = samples[i];
+  InterlockedExchange(&g_mic_write, write + count);
+}
+
+static LONG __cdecl MicrophoneComplete(DWORD transfer, DWORD* statuses,
+                                       WORD* lengths) {
+  int slot = -1;
+  for (int i = 0; i < kMicRingDepth; ++i)
+    if (transfer == (DWORD)&g_mic_isoch[i]) slot = i;
+  if (slot < 0 || !UsbTransportComplete((void*)transfer)) return 0;
+
+  bool batch_ok = statuses && lengths;
+  const unsigned frame_bytes = g_capture_format.channels * 2;
+  for (int packet = 0; packet < kMicPacketCount; ++packet) {
+    const unsigned length = lengths ? lengths[packet] : 0;
+    const bool ok = statuses && lengths && statuses[packet] == 0 &&
+        length <= g_capture_format.data.max_packet_bytes && frame_bytes &&
+        (length % frame_bytes) == 0;
+    if (!ok) {
+      batch_ok = false;
+      continue;
+    }
+
+    const BYTE* source = g_mic_packets[slot] +
+        packet * g_capture_format.data.max_packet_bytes;
+    const unsigned frames = length / frame_bytes;
+    for (unsigned frame = 0; frame < frames; ++frame) {
+      const BYTE* sample = source + frame * frame_bytes;
+      SHORT left = (SHORT)Read16(sample);
+      if (g_capture_format.channels == 1) g_mic_mono[slot][frame] = left;
+      else {
+        SHORT right = (SHORT)Read16(sample + 2);
+        g_mic_mono[slot][frame] =
+            (SHORT)(((LONG)left + (LONG)right) / 2);
+      }
+    }
+    size_t produced = g_mic_decimator.Convert(
+        g_mic_mono[slot], frames, g_mic_converted[slot],
+        sizeof(g_mic_converted[slot]) / sizeof(g_mic_converted[slot][0]));
+    PushMicrophoneSamples(g_mic_converted[slot], (unsigned)produced);
+  }
+
+  if (batch_ok) InterlockedExchange(&g_mic_healthy, 1);
+  if (g_mic_active && !g_stopping) {
+    InterlockedExchange(&g_mic_busy[slot], 1);
+    if (UsbTransportIsochInDomain(g_io_handle, &g_mic_isoch[slot],
+                                  g_mic_packet_lengths[slot]) >= 0)
+      return 0;
+    InterlockedExchange(&g_mic_active, 0);
+    InterlockedExchange(&g_mic_healthy, 0);
+  }
+  InterlockedExchange(&g_mic_busy[slot], 0);
+  return 0;
+}
+
+static void PrimeMicrophoneStream(void*) {
+  if (!g_capture_supported || g_stopping) return;
+  InterlockedExchange(&g_mic_active, 1);
+  for (int slot = 0; slot < kMicRingDepth; ++slot) {
+    InterlockedExchange(&g_mic_busy[slot], 1);
+    if (UsbTransportIsochInDomain(g_io_handle, &g_mic_isoch[slot],
+                                  g_mic_packet_lengths[slot]) < 0) {
+      InterlockedExchange(&g_mic_busy[slot], 0);
+      InterlockedExchange(&g_mic_active, 0);
+      InterlockedExchange(&g_mic_healthy, 0);
+      return;
+    }
+  }
+}
+
 static void StartIsoch() {
 #if USB_AUDIO360_TEST_STAGE == 0
   if (g_stopping) return;
@@ -709,6 +856,23 @@ static void StartIsoch() {
     g_isoch[slot].buffer = g_usb_packets[slot];
     g_isoch[slot].packet_count = kIsochPacketCount;
     g_isoch[slot].callback = (DWORD)IsochComplete;
+  }
+  if (g_capture_supported && g_mic_isoch[0].endpoint) {
+    for (int slot = 0; slot < kMicRingDepth; ++slot) {
+      g_mic_isoch[slot].endpoint = g_mic_isoch[0].endpoint;
+      g_mic_isoch[slot].saved_endpoint = g_mic_isoch[0].endpoint;
+      g_mic_isoch[slot].buffer = g_mic_packets[slot];
+      g_mic_isoch[slot].length =
+          g_capture_format.data.max_packet_bytes * kMicPacketCount;
+      g_mic_isoch[slot].packet_count = kMicPacketCount;
+      g_mic_isoch[slot].callback = (DWORD)MicrophoneComplete;
+      for (int packet = 0; packet < kMicPacketCount; ++packet)
+        g_mic_packet_lengths[slot][packet] =
+            g_capture_format.data.max_packet_bytes;
+    }
+    if (UsbTransportRun(PrimeMicrophoneStream, 0) < 0) {
+      g_capture_supported = false;
+    }
   }
   g_setup_stage = kFinished;
   UsbAudioDiagnostic[32] = kFinished;
@@ -830,7 +994,7 @@ static bool SubmitContinuousSlot(unsigned direction, int slot) {
 
 static void PrimeContinuousStream(void*) {
 #if USB_AUDIO360_TEST_STAGE == 0
-  if (g_stopping || !UsbTransportIdleInDomain()) {
+  if (g_stopping) {
     SetupFailed(0xe00e);
     return;
   }
@@ -972,6 +1136,13 @@ static void EndpointOpenTick() {
       UsbAudioDiagnostic[12] = status;
       if (status < 0) { SetupFailed(status); return; }
     }
+    if (g_capture_supported) {
+      status = UsbTransportOpen(
+          g_io_handle, g_capture_format.data.address,
+          g_capture_format.data.max_packet_bytes, 1,
+          (DWORD*)&g_mic_isoch[0]);
+      if (status < 0) g_capture_supported = false;
+    }
     UsbAudioDiagnostic[55] = 6;  // Endpoint opens completed.
     g_endpoint_phase = 3;
   } else if (g_endpoint_phase == 3) {
@@ -1084,8 +1255,7 @@ static void ClockReady() {
 #endif
 }
 
-static void ActivationVerified() {
-  UsbAudioActivationDiagnostic[0] = 1;
+static void FinishActivation() {
 #if USB_AUDIO360_DEBUG_API
   if (g_debug_controls) {
     g_debug_controls = false;
@@ -1101,6 +1271,26 @@ static void ActivationVerified() {
 #else
   SetupOnlyReady();
 #endif
+}
+
+static void DisableCaptureAndFinish(DWORD error) {
+  g_capture_supported = false;
+  UsbAudioActivationDiagnostic[15] = error;
+  InterlockedExchange(&g_mic_active, 0);
+  InterlockedExchange(&g_mic_healthy, 0);
+  FinishActivation();
+}
+
+static void ActivationVerified() {
+  UsbAudioActivationDiagnostic[0] = 1;
+#if USB_AUDIO360_TEST_STAGE == 0
+  if (g_capture_supported) {
+    QueueControl(1, 11, g_capture_format.alternate,
+                 g_capture_format.interface_number, 0, 0, kCaptureActive);
+    return;
+  }
+#endif
+  FinishActivation();
 }
 
 static void VerifyVolume() {
@@ -1129,6 +1319,17 @@ static void SetupTick() {
     UsbAudioDiagnostic[35] = status;
     UsbAudioDiagnostic[36] = received;
     if (status != 0) {
+      if (g_setup_stage == kVerifyCapture &&
+          g_capture_format.version == 1) {
+        FinishActivation();
+        return;
+      }
+      if (g_setup_stage == kCaptureActive ||
+          g_setup_stage == kCaptureRate ||
+          g_setup_stage == kVerifyCapture) {
+        DisableCaptureAndFinish((DWORD)status);
+        return;
+      }
       // Most UAC1 devices accept endpoint-rate programming after their active
       // alternate is selected. A bounded fallback supports firmware that only
       // exposes the control while inactive: deactivate once, program, then
@@ -1158,6 +1359,12 @@ static void SetupTick() {
       return;
     }
     if (g_setup_stage != kClock && received != g_control.trb.length) {
+      if (g_setup_stage == kCaptureActive ||
+          g_setup_stage == kCaptureRate ||
+          g_setup_stage == kVerifyCapture) {
+        DisableCaptureAndFinish(0xe402);
+        return;
+      }
       SetupFailed(0xe001); return;
     }
     switch (g_setup_stage) {
@@ -1208,6 +1415,27 @@ static void SetupTick() {
         g_uac1_rate_programmed = true;
         UsbAudioActivationDiagnostic[11] = 1;
         ActivateInterface();
+        break;
+      case kCaptureActive:
+        if (g_capture_format.endpoint_rate_control &&
+            !g_capture_format.fixed_48000)
+          QueueControl(0x22, 1, 0x0100,
+                       g_capture_format.data.address, 3,
+                       g_sample_rate, kCaptureRate);
+        else
+          QueueControl(0x81, 10, 0, g_capture_format.interface_number, 1,
+                       g_control_data, kVerifyCapture);
+        break;
+      case kCaptureRate:
+        QueueControl(0x81, 10, 0, g_capture_format.interface_number, 1,
+                     g_control_data, kVerifyCapture);
+        break;
+      case kVerifyCapture:
+        if (g_control_data[0] != g_capture_format.alternate) {
+          DisableCaptureAndFinish(0xe401);
+          return;
+        }
+        FinishActivation();
         break;
       case kUnmute: ReadMuteOrVolume(); break;
       case kReadMute:
@@ -1290,7 +1518,12 @@ static void SetupTick() {
       UsbAudioControlDiagnostic[11] = now;
       UsbAudioControlDiagnostic[12] = now - g_control_issued;
       ++UsbAudioControlDiagnostic[14];
-      SetupFailed(0xe004);
+      if (g_setup_stage == kCaptureActive ||
+          g_setup_stage == kCaptureRate ||
+          g_setup_stage == kVerifyCapture)
+        DisableCaptureAndFinish(0xe404);
+      else
+        SetupFailed(0xe004);
     }
   }
 }
@@ -1439,7 +1672,100 @@ BOOL AudioInitialize(const AudioHostApi* api) {
   return TRUE;
 }
 
+static void CompleteVoicePackets() {
+  const DWORD now = GetTickCount();
+  for (;;) {
+    // Slot numbers are allocation details, not packet order. Completing a
+    // newly reused low slot ahead of an older high slot makes the stateful
+    // G.726 stream jump backwards and forwards in time. Always service the
+    // oldest submitted request first.
+    VoicePacketSlot* pending = 0;
+    DWORD oldest_sequence = 0;
+    bool reservation_in_progress = false;
+    for (int slot = 0; slot < kVoicePacketDepth; ++slot) {
+      VoicePacketSlot* candidate = &g_voice_packets[slot];
+      LONG state = candidate->state;
+      if (state == 1) {
+        reservation_in_progress = true;
+        continue;
+      }
+      if (state != 2) continue;
+      DWORD sequence = candidate->sequence;
+      if (!pending || (LONG)(sequence - oldest_sequence) < 0) {
+        pending = candidate;
+        oldest_sequence = sequence;
+      }
+    }
+    // A submitter publishes its sequence and payload before changing state
+    // from reserved to queued. Wait rather than risk overtaking it.
+    if (reservation_in_progress || !pending ||
+        now - pending->queued_at < 1)
+      return;
+
+    volatile DWORD* words = pending->words;
+    const DWORD units = pending->units;
+    const DWORD samples = units * 2;
+    const bool available = AudioMicrophoneAvailable() && words &&
+        words[2] && usb_audio360::MicrophoneFrameReady(
+            g_mic_read, g_mic_write, samples);
+    if (!available && AudioMicrophoneAvailable() &&
+        now - pending->queued_at < 100)
+      return;
+    if (InterlockedCompareExchange(&pending->state, 3, 2) != 2) continue;
+
+    if (!available) {
+      if (words) {
+        words[1] = 0;
+        words[5] = 0;
+        InterlockedExchange((volatile LONG*)&words[0], kVoicePacketFailure);
+      }
+    } else {
+      SHORT* destination = (SHORT*)words[2];
+      LONG read = g_mic_read;
+      for (DWORD i = 0; i < samples; ++i)
+        destination[i] = g_mic_ring[(read + i) & (kMicRingSamples - 1)];
+      InterlockedExchange(&g_mic_read, read + samples);
+      // Direction 1 is XHV's microphone-capture request. Its initial length
+      // is expressed in bytes of the selected capture codec: format 1 is
+      // G.726, where one byte represents four 16-bit PCM bytes. We supply
+      // uncompressed 16 kHz mono PCM instead, so report its true byte length
+      // and format 0. Leaving format 1 here makes XHV decode our PCM as G.726,
+      // producing recognizable but badly garbled speech. XHV still owns VAD,
+      // outgoing encoding, packetization, and network transmission.
+      words[3] = units * 4;
+      words[5] = 0;
+      words[1] = words[3];
+      InterlockedExchange((volatile LONG*)&words[0], 0);
+    }
+
+    pending->words = 0;
+    pending->units = 0;
+    pending->queued_at = 0;
+    pending->sequence = 0;
+    InterlockedExchange(&pending->state, 0);
+  }
+}
+
+static void FailVoicePackets() {
+  for (int slot = 0; slot < kVoicePacketDepth; ++slot) {
+    VoicePacketSlot* pending = &g_voice_packets[slot];
+    if (InterlockedCompareExchange(&pending->state, 3, 2) != 2) continue;
+    volatile DWORD* words = pending->words;
+    if (words) {
+      words[1] = 0;
+      words[5] = 0;
+      InterlockedExchange((volatile LONG*)&words[0], kVoicePacketFailure);
+    }
+    pending->words = 0;
+    pending->units = 0;
+    pending->queued_at = 0;
+    pending->sequence = 0;
+    InterlockedExchange(&pending->state, 0);
+  }
+}
+
 VOID AudioTick(const AudioHostApi* api) {
+  CompleteVoicePackets();
   if (!api) return;
   if (g_rearm_pending) {
     DWORD now = GetTickCount();
@@ -1483,6 +1809,10 @@ VOID AudioTick(const AudioHostApi* api) {
 
 VOID AudioDeviceRemoved() {
   InterlockedExchange(&g_stopping, 1);
+  InterlockedExchange(&g_mic_active, 0);
+  InterlockedExchange(&g_mic_healthy, 0);
+  FailVoicePackets();
+  InterlockedExchange(&g_mic_read, g_mic_write);
   bool was_connected = InterlockedExchange(&g_streaming, 0) != 0 ||
                        g_notification_shown;
   InterlockedExchange(&g_notification_shown, 0);
@@ -1531,4 +1861,45 @@ BOOL AudioAdjustVolume(LONG delta_percent) {
     }
     current = observed;
   }
+}
+
+BOOL AudioMicrophoneAvailable() {
+  return g_mic_active && g_mic_healthy && !g_stopping &&
+      g_api && g_api->playback_handle;
+}
+
+BOOL AudioSubmitMicrophonePacket(void* packet) {
+  if (!AudioMicrophoneAvailable() || !packet) return FALSE;
+
+  // XHV submits an asynchronous native microphone-capture request. Its unit
+  // count maps to two 16 kHz PCM samples for capture format 1; XHV owns all
+  // later codec selection, voice activity, packetization, and transmission.
+  volatile DWORD* words = (volatile DWORD*)packet;
+  DWORD units = words[3];
+  if (!words[2] || !units || units > 512) return FALSE;
+
+  const DWORD now = GetTickCount();
+  const DWORD previous_submit = (DWORD)InterlockedExchange(
+      &g_voice_last_submit, (LONG)now);
+  if (usb_audio360::MicrophoneSessionRestarted(
+          previous_submit, now, kVoiceSessionIdleMs)) {
+    // Do not transmit audio captured while no title was listening. Starting
+    // empty adds only the duration of the title's first requested frame and
+    // establishes a low-latency steady state without trimming active speech.
+    InterlockedExchange(&g_mic_read, g_mic_write);
+  }
+
+  for (int slot = 0; slot < kVoicePacketDepth; ++slot) {
+    VoicePacketSlot* pending = &g_voice_packets[slot];
+    if (InterlockedCompareExchange(&pending->state, 1, 0) != 0) continue;
+    pending->sequence =
+        (DWORD)InterlockedIncrement(&g_voice_packet_sequence);
+    pending->words = words;
+    pending->units = units;
+    pending->queued_at = now;
+    InterlockedExchange((volatile LONG*)&words[0], kVoicePacketPending);
+    InterlockedExchange(&pending->state, 2);
+    return TRUE;
+  }
+  return FALSE;
 }

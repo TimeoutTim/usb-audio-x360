@@ -64,7 +64,7 @@ bool ControlFor(const Byte* b, size_t total, Byte stream, Byte version,
 }
 
 bool TerminalClock(const Byte* b, size_t total, Byte ac, Byte terminal,
-                   Byte version, Byte* clock) {
+                   Byte version, Direction direction, Byte* clock) {
   bool in_ac = false;
   unsigned matches = 0;
   for (size_t o = b[0]; o < total; o += b[o]) {
@@ -73,10 +73,15 @@ bool TerminalClock(const Byte* b, size_t total, Byte ac, Byte terminal,
     if (p[1] == 4)
       in_ac = AudioInterface(p, 1, version == 2 ? 0x20 : 0) &&
               p[2] == ac && p[3] == 0;
-    // Playback's USB-streaming input terminal, not an unrelated output.
-    if (in_ac && p[1] == 0x24 && p[0] >= (version == 2 ? 17 : 12) &&
-        p[2] == 2 && p[3] == terminal && Read16(p + 4) == 0x0101) {
-      *clock = version == 2 ? p[7] : 0;
+    const Byte subtype = direction == kPlayback ? 2 : 3;
+    const unsigned minimum = version == 2
+        ? (direction == kPlayback ? 17 : 12)
+        : (direction == kPlayback ? 12 : 9);
+    // Playback links to a USB-streaming input terminal; capture links to a
+    // USB-streaming output terminal. Do not borrow an unrelated terminal.
+    if (in_ac && p[1] == 0x24 && p[0] >= minimum && p[2] == subtype &&
+        p[3] == terminal && Read16(p + 4) == 0x0101) {
+      *clock = version == 2 ? (direction == kPlayback ? p[7] : p[8]) : 0;
       ++matches;
     }
   }
@@ -105,9 +110,12 @@ bool Candidate(const Byte* b, size_t total, size_t begin, size_t end,
   f->alternate = iface[3];
   f->version = iface[7] == 0x20 ? 2 : 1;
   bool general = false, format = false, pcm = false;
-  unsigned data_count = 0, feedback_count = 0, endpoint_count = 0;
+  unsigned output_count = 0, input_count = 0, feedback_count = 0;
+  unsigned endpoint_count = 0;
+  Endpoint output_endpoint = {}, input_endpoint = {};
+  Sync output_sync = kNoSync, input_sync = kNoSync;
+  Byte output_sync_address = 0;
   unsigned class_endpoint_count = 0;
-  Byte sync_address = 0;
   f->endpoint_layout_supported = true;
   for (size_t o = begin + iface[0]; o < end; o += b[o]) {
     const Byte* p = b + o;
@@ -150,16 +158,24 @@ bool Candidate(const Byte* b, size_t total, size_t begin, size_t end,
       if ((p[3] & 3) != 1) f->endpoint_layout_supported = false;
       unsigned usage = (p[3] >> 4) & 3;
       if (!(p[2] & 0x80) && usage == 0) {
-        ++data_count;
-        if (data_count == 1) {
-          if (!ReadEndpoint(p, &f->data)) return false;
-          f->sync = static_cast<Sync>((p[3] >> 2) & 3);
-          if (f->version == 1 && p[0] >= 9) sync_address = p[8];
+        ++output_count;
+        if (output_count == 1) {
+          if (!ReadEndpoint(p, &output_endpoint)) return false;
+          output_sync = static_cast<Sync>((p[3] >> 2) & 3);
+          if (f->version == 1 && p[0] >= 9) output_sync_address = p[8];
+        } else {
+          f->endpoint_layout_supported = false;
+        }
+      } else if ((p[2] & 0x80) && (usage == 0 || usage == 2)) {
+        ++input_count;
+        if (input_count == 1) {
+          if (!ReadEndpoint(p, &input_endpoint)) return false;
+          input_sync = static_cast<Sync>((p[3] >> 2) & 3);
         } else {
           f->endpoint_layout_supported = false;
         }
       } else if ((p[2] & 0x80) &&
-                 (usage == 1 || (f->version == 1 && usage == 0))) {
+                 usage == 1) {
         ++feedback_count;
         if (feedback_count == 1) {
           if (!ReadEndpoint(p, &f->feedback)) return false;
@@ -167,8 +183,7 @@ bool Candidate(const Byte* b, size_t total, size_t begin, size_t end,
           f->endpoint_layout_supported = false;
         }
       } else {
-        // Retain the candidate for diagnostics/selection, but this MVP cannot
-        // stream capture or implicit-feedback endpoint layouts.
+        // Retain the candidate for diagnostics/selection.
         f->endpoint_layout_supported = false;
       }
     } else if (p[1] == 0x25 && f->version == 1) {
@@ -183,21 +198,27 @@ bool Candidate(const Byte* b, size_t total, size_t begin, size_t end,
         f->endpoint_layout_supported = false;
     }
   }
-  if (!general || !format || !pcm || !f->terminal || !data_count)
+  if (!general || !format || !pcm || !f->terminal ||
+      (output_count == input_count))
     return false;
+  f->direction = output_count ? kPlayback : kCapture;
+  f->data = output_count ? output_endpoint : input_endpoint;
+  f->sync = output_count ? output_sync : input_sync;
   if (endpoint_count != iface[4]) f->endpoint_layout_supported = false;
-  if (f->sync == kAsynchronous) {
-    if (!feedback_count || (sync_address && sync_address != f->feedback.address) ||
-        (f->version == 1 && sync_address != f->feedback.address) ||
+  if (f->direction == kPlayback && f->sync == kAsynchronous) {
+    if (!feedback_count ||
+        (output_sync_address && output_sync_address != f->feedback.address) ||
+        (f->version == 1 && output_sync_address != f->feedback.address) ||
         f->feedback.max_packet_bytes < 3 || f->feedback.max_packet_bytes > 4)
       f->endpoint_layout_supported = false;
-  } else if (feedback_count || sync_address) {
+  } else if (feedback_count || output_sync_address) {
     f->endpoint_layout_supported = false;
   }
   const bool associated = ControlFor(b, total, f->interface_number, f->version,
                                      &f->control_interface);
   const bool terminal = associated && TerminalClock(
-      b, total, f->control_interface, f->terminal, f->version, &f->clock);
+      b, total, f->control_interface, f->terminal, f->version,
+      f->direction, &f->clock);
   // UAC1 endpoint direction is sufficient to identify playback; its AC
   // topology is not needed for this driver's endpoint-based setup. UAC2 must
   // retain an unambiguous clock association.

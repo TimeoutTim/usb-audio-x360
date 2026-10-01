@@ -28,6 +28,14 @@ const DWORD kUsbHcdTable = 0x801A8230;
 const DWORD kGetInterfaceDescriptor = 0x800D8500;
 const DWORD kResetRootHubPort = 0x800D7D20;
 const DWORD kNodePoolBytes = 0x1000;
+const DWORD kVoiceBindingCategory = 1;
+const DWORD kVirtualVoiceDeviceId = 0xA7554D49;
+// XVoiced context family 4 is the standalone voice-device path. The low
+// 28 bits select its player/device slot, so player zero uses slot zero.
+const DWORD kVirtualStandaloneVoiceContext = 0x40000000;
+const DWORD kRetailBindWrapper21256 = 0x816D9060;
+const DWORD kRetailBindingTablePointer21256 = 0x81A82FF4;
+const DWORD kVoiceBindingRetryMs = 2000;
 
 struct XboxKernelVersion {
   WORD major;
@@ -91,6 +99,20 @@ struct DeviceHandle {
   DriverExtension* driver;
 };
 
+// Retail XAM 21256 keeps one 0x40-byte device-binding record per player.
+// Category zero remains the controller association; category one is the
+// active chat route switched by an original wireless headset's quadrant
+// button. This layout is used only after ResolveVoiceBinding validates the
+// corresponding retail binding routine instruction-for-instruction.
+struct VoiceBindingRecord {
+  DWORD primary_device_id;
+  DWORD secondary_device_id;
+  struct {
+    DWORD active;
+    DWORD context;
+  } category[7];
+};
+
 struct UsbDeviceDescriptor {
   BYTE length;
   BYTE descriptor_type;
@@ -128,6 +150,11 @@ typedef DeviceHandle* (*GetRootHubDeviceNodeFn)(DWORD);
 typedef DeviceHandle* (*GetPortDeviceNodeFn)(DeviceHandle*, DWORD);
 typedef VOID (*ResetRootHubPortFn)(DeviceHandle*, DWORD);
 typedef PVOID (*XexPcToFileHeaderFn)(PVOID, PVOID*);
+typedef BOOL (*XamVoiceHeadsetPresentFn)(void*);
+typedef LONG (*XamVoiceSubmitPacketFn)(void*, DWORD, void*);
+typedef LONG (*XamVoiceGetBatteryStatusFn)(DWORD, DWORD*);
+typedef int (*XamUserBindDeviceCallbackFn)(DWORD, DWORD, BYTE, BOOL, BYTE*);
+typedef LONG (*XamUserGetDeviceContextFn)(DWORD, DWORD, DWORD*);
 
 static GetDeviceDescriptorFn g_get_device_descriptor = 0;
 static GetInterfaceDescriptorFn g_get_interface_descriptor = 0;
@@ -137,10 +164,189 @@ static GetRootHubDeviceNodeFn g_get_root_hub_device_node = 0;
 static GetPortDeviceNodeFn g_get_port_device_node = 0;
 static PowerPcDetour g_add_detour;
 static PowerPcDetour g_remove_detour;
+static PowerPcDetour g_voice_present_detour;
+static PowerPcDetour g_voice_submit_detour;
+static PowerPcDetour g_voice_battery_detour;
+static XamUserBindDeviceCallbackFn g_bind_device = 0;
+static XamUserGetDeviceContextFn g_get_device_context = 0;
+static volatile LONG g_voice_binding_active = 0;
+static BYTE g_voice_binding_user = 0xFF;
+static DWORD g_voice_binding_retry_at = 0;
+static DWORD g_displaced_voice_context = 0;
+static DWORD g_displaced_voice_device_id = 0;
 static DriverExtension g_extension;
 static volatile DeviceHandle* g_playback_handle = 0;
 static usb_transport::DeviceClaimGate g_device_gate;
 static AudioHostApi g_audio_api;
+
+static BOOL XamVoiceHeadsetPresentHook(void* handle) {
+  XamVoiceHeadsetPresentFn original =
+      g_voice_present_detour.Original<XamVoiceHeadsetPresentFn>();
+  if (original && original(handle)) return TRUE;
+  return AudioMicrophoneAvailable();
+}
+
+static LONG XamVoiceSubmitPacketHook(void* handle, DWORD direction,
+                                     void* packet) {
+  XamVoiceHeadsetPresentFn present =
+      g_voice_present_detour.Original<XamVoiceHeadsetPresentFn>();
+  XamVoiceSubmitPacketFn submit =
+      g_voice_submit_detour.Original<XamVoiceSubmitPacketFn>();
+  // A category-1 virtual binding makes the original presence query succeed,
+  // but it has no radio hardware from which XVoiced can obtain packets. Feed
+  // that binding from USB; before it is active, preserve native arbitration.
+  if (direction == 1 &&
+      (g_voice_binding_active || !present || !present(handle)) &&
+      AudioSubmitMicrophonePacket(packet))
+    return 0;
+  return submit ? submit(handle, direction, packet) : (LONG)0x80004005;
+}
+
+static LONG XamVoiceGetBatteryStatusHook(DWORD user, DWORD* status) {
+  // The virtual headset is USB-powered and therefore always available at
+  // full charge. XAM/XVoiced use the same four-level value as XInput, where
+  // 3 is full. Do not alter battery reporting for any native voice device.
+  if (status && g_voice_binding_active && user == g_voice_binding_user) {
+    *status = 3;
+    return 0;
+  }
+  XamVoiceGetBatteryStatusFn original =
+      g_voice_battery_detour.Original<XamVoiceGetBatteryStatusFn>();
+  return original ? original(user, status) : (LONG)0x80004005;
+}
+
+static bool ResolveVoiceBinding() {
+  HANDLE xam = GetModuleHandleA("xam.xex");
+  if (!xam) return false;
+  XexGetProcedureAddress(xam, 520, &g_get_device_context);
+
+  static const DWORD expected[] = {
+      0x7C8B2378, 0x7CA42B78, 0x54CA063F, 0x41820010,
+      0x7CE53B78, 0x7D635B78, 0x4BFFFED8, 0x7C852378,
+      0x7CE63B78, 0x7D645B78, 0x4BFFFC50,
+  };
+  volatile const DWORD* code =
+      (volatile const DWORD*)kRetailBindWrapper21256;
+  for (DWORD i = 0; i < sizeof(expected) / sizeof(expected[0]); ++i) {
+    if (code[i] != expected[i]) {
+      return false;
+    }
+  }
+  g_bind_device =
+      (XamUserBindDeviceCallbackFn)kRetailBindWrapper21256;
+  return true;
+}
+
+static VoiceBindingRecord* VoiceBindingRecords() {
+  volatile VoiceBindingRecord* const* pointer =
+      (volatile VoiceBindingRecord* const*)kRetailBindingTablePointer21256;
+  VoiceBindingRecord* records = (VoiceBindingRecord*)*pointer;
+  const DWORD address = (DWORD)records;
+  if (!records || (address & 3) || address < 0x80000000 ||
+      address >= 0xA0000000) {
+    return 0;
+  }
+  return records;
+}
+
+static void RestoreDisplacedVoiceRoute() {
+  if (!g_displaced_voice_context || !g_bind_device) return;
+  BYTE requested_user = 0;
+  g_bind_device(g_displaced_voice_device_id, g_displaced_voice_context,
+                (BYTE)kVoiceBindingCategory, FALSE, &requested_user);
+  g_displaced_voice_context = 0;
+  g_displaced_voice_device_id = 0;
+}
+
+static bool MakePlayerZeroVoiceSlotAvailable() {
+  DWORD context = 0;
+  if (!g_get_device_context ||
+      g_get_device_context(0, kVoiceBindingCategory, &context) < 0 ||
+      !context || context == kVirtualStandaloneVoiceContext) {
+    return true;
+  }
+
+  VoiceBindingRecord* records = VoiceBindingRecords();
+  if (!records || !records[0].category[kVoiceBindingCategory].active ||
+      records[0].category[kVoiceBindingCategory].context != context) {
+    return false;
+  }
+
+  const DWORD family = context & 0xF0000000;
+  g_displaced_voice_context = context;
+  g_displaced_voice_device_id = family == 0x40000000 ||
+      family == 0x50000000
+      ? records[0].secondary_device_id
+      : records[0].primary_device_id;
+
+  BYTE removed_user = 0xFF;
+  const int result = g_bind_device(
+      g_displaced_voice_device_id, context, (BYTE)kVoiceBindingCategory,
+      TRUE, &removed_user);
+  if (result < 0 || removed_user != 0) {
+    g_displaced_voice_context = 0;
+    g_displaced_voice_device_id = 0;
+    return false;
+  }
+  return true;
+}
+
+static void UnbindVirtualVoiceHeadset() {
+  if (!g_voice_binding_active || !g_bind_device) return;
+  BYTE removed_user = 0xFF;
+  g_bind_device(
+      kVirtualVoiceDeviceId, kVirtualStandaloneVoiceContext,
+      (BYTE)kVoiceBindingCategory, TRUE, &removed_user);
+  InterlockedExchange(&g_voice_binding_active, 0);
+  g_voice_binding_user = 0xFF;
+  RestoreDisplacedVoiceRoute();
+}
+
+static void VoiceBindingTick() {
+  const bool microphone_available = AudioMicrophoneAvailable() != FALSE;
+  if (!microphone_available) {
+    UnbindVirtualVoiceHeadset();
+    return;
+  }
+  if (g_voice_binding_active || !g_bind_device) return;
+  if (XUserGetSigninState(0) == eXUserSigninState_NotSignedIn) return;
+
+  const DWORD now = GetTickCount();
+  if ((LONG)(now - g_voice_binding_retry_at) < 0) return;
+  g_voice_binding_retry_at = now + kVoiceBindingRetryMs;
+
+  // XAM has a single active chat route per player. This is the same category
+  // an original standalone wireless headset replaces, while the controller
+  // remains associated independently in category zero. Save the exact prior
+  // route so disconnect and every failure path are reversible.
+  if (!MakePlayerZeroVoiceSlotAvailable()) return;
+
+  BYTE requested_user = 0;
+  int result = g_bind_device(
+      kVirtualVoiceDeviceId, kVirtualStandaloneVoiceContext,
+      (BYTE)kVoiceBindingCategory, FALSE, &requested_user);
+  if (result < 0) {
+    RestoreDisplacedVoiceRoute();
+    return;
+  }
+
+  // This first implementation deliberately emulates a headset pinned to the
+  // first quadrant. A later input chord may change the requested player, but
+  // silently accepting XAM's fallback slot would associate voice with the
+  // wrong profile.
+  if (requested_user != 0 ||
+      XUserGetSigninState(0) == eXUserSigninState_NotSignedIn) {
+    BYTE removed_user = 0xFF;
+    g_bind_device(
+        kVirtualVoiceDeviceId, kVirtualStandaloneVoiceContext,
+        (BYTE)kVoiceBindingCategory, TRUE, &removed_user);
+    RestoreDisplacedVoiceRoute();
+    return;
+  }
+
+  g_voice_binding_user = requested_user;
+  InterlockedExchange(&g_voice_binding_active, 1);
+}
 
 template <typename T>
 static bool Resolve(HANDLE module, DWORD ordinal, T* result) {
@@ -445,6 +651,7 @@ static DWORD WINAPI NotificationWorker(void*) {
   for (;;) {
     PollVolumeChord();
     AudioNotificationTick();
+    VoiceBindingTick();
     DiagnosticsTick();
     Sleep(100);
   }
@@ -514,6 +721,32 @@ extern "C" BOOL APIENTRY DllMain(HANDLE module, DWORD reason, LPVOID) {
     g_add_detour.Remove();
     g_remove_detour.Remove();
     return TRUE;
+  }
+
+  // XHV2 is statically linked into titles and reaches the persistent XAM
+  // voice service through these exports. Hooking only presence and microphone
+  // packet submission preserves native voice behavior and avoids title hooks.
+  HANDLE xam = GetModuleHandleA("xam.xex");
+  XamVoiceHeadsetPresentFn voice_present = 0;
+  XamVoiceSubmitPacketFn voice_submit = 0;
+  XamVoiceGetBatteryStatusFn voice_battery = 0;
+  if (xam && Resolve(xam, 0x30D, &voice_present) &&
+      Resolve(xam, 0x30E, &voice_submit) &&
+      Resolve(xam, 0x310, &voice_battery)) {
+    ResolveVoiceBinding();
+    g_voice_present_detour = PowerPcDetour(
+        (void*)voice_present, (const void*)XamVoiceHeadsetPresentHook);
+    g_voice_submit_detour = PowerPcDetour(
+        (void*)voice_submit, (const void*)XamVoiceSubmitPacketHook);
+    g_voice_battery_detour = PowerPcDetour(
+        (void*)voice_battery, (const void*)XamVoiceGetBatteryStatusHook);
+    if (!g_voice_present_detour.Install() ||
+        !g_voice_submit_detour.Install() ||
+        !g_voice_battery_detour.Install()) {
+      g_voice_battery_detour.Remove();
+      g_voice_submit_detour.Remove();
+      g_voice_present_detour.Remove();
+    }
   }
 
   if (!StartWorker((LPTHREAD_START_ROUTINE)AudioWorker,

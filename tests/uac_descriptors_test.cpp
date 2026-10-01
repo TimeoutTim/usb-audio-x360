@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "uac_descriptors.h"
 #include "playback_profile.h"
+#include "capture_profile.h"
 #include <assert.h>
 #include <stdio.h>
 #include <vector>
@@ -136,30 +137,41 @@ int main() {
   // size is valid and must not be mistaken for a required transfer length.
   Bytes space_touch = SpaceTouch();
   assert(space_touch.size() == 0x11b);
-  assert(Parse(space_touch, formats) == 2);
-  assert(formats[0].interface_number == 2 && formats[0].alternate == 1);
-  assert(formats[0].sample_bytes == 2 && formats[0].valid_bits == 16);
-  assert(formats[0].sync == uac::kAdaptive && !formats[0].feedback.address);
-  assert(formats[0].data.address == 2 &&
-         formats[0].data.max_packet_bytes == 600);
-  assert(formats[0].endpoint_rate_control && formats[0].supports_48000);
-  assert(!formats[0].fixed_48000);
-  assert(uac::SupportedFullSpeedPlayback(formats[0]));
-  assert(formats[1].alternate == 2 && formats[1].sample_bytes == 3);
+  assert(Parse(space_touch, formats) == 3);
+  assert(formats[0].direction == uac::kCapture);
+  assert(formats[0].interface_number == 1 && formats[0].alternate == 1);
+  assert(formats[0].channels == 2 && formats[0].sample_bytes == 2);
+  assert(formats[0].data.address == 0x83 &&
+         formats[0].data.max_packet_bytes == 192);
+  assert(formats[0].sync == uac::kAsynchronous);
+  assert(uac::SupportedFullSpeedCapture(formats[0]));
+  size_t capture_selected = 99;
+  assert(uac::SelectFullSpeedCapture(formats, 3, &capture_selected));
+  assert(capture_selected == 0);
+  assert(formats[1].direction == uac::kPlayback);
+  assert(formats[1].interface_number == 2 && formats[1].alternate == 1);
+  assert(formats[1].sample_bytes == 2 && formats[1].valid_bits == 16);
+  assert(formats[1].sync == uac::kAdaptive && !formats[1].feedback.address);
+  assert(formats[1].data.address == 2 &&
+         formats[1].data.max_packet_bytes == 600);
+  assert(formats[1].endpoint_rate_control && formats[1].supports_48000);
+  assert(!formats[1].fixed_48000);
   assert(uac::SupportedFullSpeedPlayback(formats[1]));
+  assert(formats[2].alternate == 2 && formats[2].sample_bytes == 3);
+  assert(uac::SupportedFullSpeedPlayback(formats[2]));
   size_t selected = 99;
   // Interface 1 is capture-only; a claim there must fall back to playback 2.
-  assert(uac::SelectFullSpeedPlayback(formats, 2, 1, &selected));
-  assert(selected == 0 && formats[selected].interface_number == 2);
+  assert(uac::SelectFullSpeedPlayback(formats, 3, 1, &selected));
+  assert(selected == 1 && formats[selected].interface_number == 2);
   selected = 99;
-  assert(uac::SelectFullSpeedPlayback(formats, 2, 2, &selected));
-  assert(selected == 0);  // Prefer 16-bit alternate 1 over alternate 2.
-  uac::Format reordered[2] = {formats[1], formats[0]};
+  assert(uac::SelectFullSpeedPlayback(formats, 3, 2, &selected));
+  assert(selected == 1);  // Prefer 16-bit alternate 1 over alternate 2.
+  uac::Format reordered[2] = {formats[2], formats[1]};
   assert(uac::SelectFullSpeedPlayback(reordered, 2, 2, &selected));
   assert(selected == 1);  // Preference is semantic, not descriptor order.
   assert(!uac::SelectFullSpeedPlayback(0, 1, 2, &selected));
   assert(!uac::SelectFullSpeedPlayback(formats, 2, 2, 0));
-  uac::Format capacity = formats[0];
+  uac::Format capacity = formats[1];
   capacity.data.max_packet_bytes = 191;
   assert(!uac::SupportedFullSpeedPlayback(capacity));
   capacity.data.max_packet_bytes = 1024;
