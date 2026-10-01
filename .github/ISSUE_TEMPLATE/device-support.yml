@@ -1,0 +1,54 @@
+name: USB audio device not working
+description: Report a USB audio device that is not working correctly.
+title: "[Device support]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve USB Audio 360 device compatibility.
+
+        Before opening this report, reproduce the problem once with the latest release. The plugin records the USB descriptors, selected audio profile, and any setup or streaming failure in `usb_audio360.log`.
+
+  - type: input
+    id: device
+    attributes:
+      label: USB audio device
+      description: Provide the manufacturer and model. Include its USB VID:PID if known.
+      placeholder: "Example: Sabrent AU-MMSA (VID:PID 0d8c:0014)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Briefly describe what you expected and what occurred instead.
+      placeholder: "Example: The connection notification appeared, but no audio played."
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Diagnostic log
+      description: |
+        Attach `usb_audio360.log` by dragging it into this box. It is in the same directory as `usb_audio360.xex`—for the standard installation, `Usb:\Plugins\usb_audio360.log`.
+
+        Reproduce the problem before copying the file. If present, also attach `usb_audio360.log.old`.
+      placeholder: Drag and drop usb_audio360.log here.
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional details
+      description: Add anything else that may help, such as the plugin version, connection order, or whether reconnecting changes the result.
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: I reproduced this problem with the latest USB Audio 360 release and attached the resulting diagnostic log.
+          required: true
