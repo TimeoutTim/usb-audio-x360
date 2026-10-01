@@ -44,9 +44,9 @@ captured audio or USB serial-number strings.
 
 | Device | Class | USB ID | Connection | Tested features |
 | --- | --- | --- | --- | --- |
-| SABRENT AU-MMSA USB External Stereo Sound Adapter | UAC1 | `0d8c:0014` | USB-A | Output and microphone |
+| SABRENT AU-MMSA USB External Stereo Sound Adapter | UAC1 | `0d8c:0014` | USB-A | Output |
 | Apple AirPods Max USB Audio | UAC2 | `05ac:110c` | USB-A-to-USB-C cable | Output |
-| [SPACETOUCH USB Audio](https://www.amazon.com.au/dp/B0GT9K55KX) | UAC1 | `0666:0880` | USB-A | Output |
+| [SPACETOUCH USB Audio](https://www.amazon.com.au/dp/B0GT9K55KX) | UAC1 | `0666:0880` | USB-A | Output and Microphone |
 | Sennheiser MOMENTUM 3 Wireless | UAC1 | `1377:6004` | USB-A-to-USB-C cable | Output |
 
 Compatibility is determined from each device's USB Audio descriptors, not
