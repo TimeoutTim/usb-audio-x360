@@ -12,7 +12,8 @@ namespace uac {
 inline bool SupportedFullSpeedPlayback(const Format& f) {
   const unsigned frames = f.sync == kAsynchronous ? 49 : 48;
   const unsigned generated = frames * f.channels * f.sample_bytes;
-  if (!f.endpoint_layout_supported || !f.topology_valid ||
+  if (f.direction != kPlayback || !f.endpoint_layout_supported ||
+      !f.topology_valid ||
       f.channels != 2 || f.sample_bytes < 2 || f.sample_bytes > 4 ||
       !f.valid_bits || f.valid_bits > f.sample_bytes * 8 ||
       (f.version == 1 && (!f.rate_48000_known || !f.supports_48000)) ||

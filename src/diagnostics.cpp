@@ -2,6 +2,7 @@
 #include "diagnostics.h"
 
 #include "playback_profile.h"
+#include "capture_profile.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -160,7 +161,8 @@ static const char* StageName(DWORD stage) {
     "uac1-rate", "unmute", "active", "finished", "opening",
     "read-mute", "read-volume", "verify-interface", "verify-clock",
     "verify-mute", "verify-volume", "uac1-fallback-inactive",
-    "uac1-fallback-rate"
+    "uac1-fallback-rate", "capture-active", "capture-rate",
+    "verify-capture"
   };
   return stage < sizeof(names) / sizeof(names[0]) ? names[stage] : "unknown";
 }
@@ -168,19 +170,21 @@ static const char* StageName(DWORD stage) {
 static void WriteFormat(FILE* file, size_t index, const uac::Format& f) {
   fprintf(file,
       "  format[%u] uac=%u cfg=%u ac_if=%u as_if=%u alt=%u channels=%u "
-      "bytes=%u valid_bits=%u terminal=%u clock=%u sync=%u "
+      "bytes=%u valid_bits=%u direction=%s terminal=%u clock=%u sync=%u "
       "data=0x%02x/%u/interval%u feedback=0x%02x/%u/interval%u "
       "rate_known=%u rate_48000=%u fixed_48000=%u rate_control=%u "
-      "layout=%u topology=%u supported=%u\n",
+      "layout=%u topology=%u playback_supported=%u capture_supported=%u\n",
       (unsigned)index, f.version, f.configuration, f.control_interface,
       f.interface_number, f.alternate, f.channels, f.sample_bytes,
-      f.valid_bits, f.terminal, f.clock, f.sync, f.data.address,
+      f.valid_bits, f.direction == uac::kCapture ? "capture" : "playback",
+      f.terminal, f.clock, f.sync, f.data.address,
       f.data.max_packet_bytes, f.data.interval, f.feedback.address,
       f.feedback.max_packet_bytes, f.feedback.interval,
       f.rate_48000_known ? 1 : 0, f.supports_48000 ? 1 : 0,
       f.fixed_48000 ? 1 : 0, f.endpoint_rate_control ? 1 : 0,
       f.endpoint_layout_supported ? 1 : 0, f.topology_valid ? 1 : 0,
-      uac::SupportedFullSpeedPlayback(f) ? 1 : 0);
+      uac::SupportedFullSpeedPlayback(f) ? 1 : 0,
+      uac::SupportedFullSpeedCapture(f) ? 1 : 0);
 }
 
 static void WriteConfiguration(FILE* file, const Event& event) {
