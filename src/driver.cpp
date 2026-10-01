@@ -4,6 +4,7 @@
 
 #include "audio.h"
 #include "diagnostics.h"
+#include "guide_ui.h"
 #include "device_claim_gate.h"
 #include "playback_profile.h"
 #include "uac_descriptors.h"
@@ -626,30 +627,9 @@ static DWORD WINAPI AudioWorker(void*) {
   }
 }
 
-static void PollVolumeChord() {
-  static WORD previous_buttons[XUSER_MAX_COUNT] = {0};
-  for (DWORD user = 0; user < XUSER_MAX_COUNT; ++user) {
-    XINPUT_STATE state;
-    memset(&state, 0, sizeof(state));
-    if (XInputGetState(user, &state) != ERROR_SUCCESS) {
-      previous_buttons[user] = 0;
-      continue;
-    }
-
-    WORD buttons = state.Gamepad.wButtons;
-    WORD pressed = buttons & ~previous_buttons[user];
-    previous_buttons[user] = buttons;
-    if (!(buttons & XINPUT_GAMEPAD_BACK)) continue;
-
-    bool up = (pressed & XINPUT_GAMEPAD_DPAD_UP) != 0;
-    bool down = (pressed & XINPUT_GAMEPAD_DPAD_DOWN) != 0;
-    if (up != down) AudioAdjustVolume(up ? 5 : -5);
-  }
-}
-
 static DWORD WINAPI NotificationWorker(void*) {
   for (;;) {
-    PollVolumeChord();
+    GuideUiTick();
     AudioNotificationTick();
     VoiceBindingTick();
     DiagnosticsTick();

@@ -1843,24 +1843,19 @@ VOID AudioNotificationTick() {
     InterlockedExchange(&g_notification_shown, 1);
 }
 
-BOOL AudioAdjustVolume(LONG delta_percent) {
-  if (!g_streaming || g_stopping || !g_api || !g_api->playback_handle)
-    return FALSE;
+BOOL AudioSetVolume(LONG percent) {
+  // Volume is user state, not endpoint state. Allow adjustment while idle or
+  // disconnected, without dereferencing the audio worker's device context.
+  if (percent < 0) percent = 0;
+  if (percent > 100) percent = 100;
+  LONG previous = InterlockedExchange(&g_volume_percent, percent);
+  if (previous == percent) return FALSE;
+  InterlockedExchange(&g_volume_feedback_pending, 1);
+  return TRUE;
+}
 
-  LONG current = g_volume_percent;
-  for (;;) {
-    LONG next = current + delta_percent;
-    if (next < 0) next = 0;
-    if (next > 100) next = 100;
-    if (next == current) return FALSE;
-    LONG observed = InterlockedCompareExchange(&g_volume_percent,
-                                               next, current);
-    if (observed == current) {
-      InterlockedExchange(&g_volume_feedback_pending, 1);
-      return TRUE;
-    }
-    current = observed;
-  }
+LONG AudioGetVolume() {
+  return InterlockedCompareExchange(&g_volume_percent, 0, 0);
 }
 
 BOOL AudioMicrophoneAvailable() {

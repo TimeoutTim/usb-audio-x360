@@ -31,9 +31,11 @@ The console displays a notification after audio starts. Only one USB audio
 device is used at a time. To switch devices, disconnect the active device,
 wait briefly for cleanup to finish, and then connect the next device.
 
-Hold **Back** on a connected controller and press **D-pad Up** or
-**D-pad Down** to adjust USB output volume in 5% steps. Volume resets to 100%
-when the console restarts.
+This development branch replaces the Back/D-pad volume chord with an
+experimental native slider on the Guide's Home page. Highlight the USB volume
+row with Up/Down and adjust it with Left/Right (no A-button press is needed)
+in 5% steps. Volume resets to 100% when the console restarts. Guide integration
+is still undergoing hardware testing; the gameplay chord is disabled.
 
 If a device does not work, reproduce the problem once and shut down the
 console. Attach `usb_audio360.log`, found beside `usb_audio360.xex`, to a

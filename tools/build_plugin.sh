@@ -15,11 +15,17 @@ wine_prefix_ready="$wine_prefix/.usb-audio360-ready"
 build_dir="$runtime_root/build"
 output_dir="$project_root/bin"
 debug_api=${USB_AUDIO360_DEBUG_API:-0}
+guide_diagnostics=${USB_AUDIO360_GUIDE_DIAGNOSTICS:-0}
 if [[ "$debug_api" != 0 && "$debug_api" != 1 ]]; then
   echo "USB_AUDIO360_DEBUG_API must be 0 or 1" >&2
   exit 1
 fi
-if [[ "$debug_api" == 1 ]]; then output_dir="$output_dir/debug"; fi
+if [[ "$guide_diagnostics" != 0 && "$guide_diagnostics" != 1 ]]; then
+  echo "USB_AUDIO360_GUIDE_DIAGNOSTICS must be 0 or 1" >&2
+  exit 1
+fi
+if [[ "$guide_diagnostics" == 1 ]]; then output_dir="$output_dir/guide-debug"; fi
+if [[ "$debug_api" == 1 ]]; then output_dir="$project_root/bin/debug"; fi
 
 mkdir -p "$runtime_root" "$build_dir" "$output_dir" "$build_dir/tmp"
 
@@ -96,6 +102,9 @@ rm -f "$build_dir"/*.obj "$build_dir"/*.pe "$build_dir"/*.xex \
 cp "$project_root/src/driver.cpp" "$build_dir/driver.cpp"
 cp "$project_root/src/audio.cpp" "$build_dir/audio.cpp"
 cp "$project_root/src/audio.h" "$build_dir/audio.h"
+cp "$project_root/src/guide_ui.cpp" "$build_dir/guide_ui.cpp"
+cp "$project_root/src/guide_ui.h" "$build_dir/guide_ui.h"
+cp "$project_root/src/guide_layout.h" "$build_dir/guide_layout.h"
 cp "$project_root/src/diagnostics.cpp" "$build_dir/diagnostics.cpp"
 cp "$project_root/src/diagnostics.h" "$build_dir/diagnostics.h"
 cp "$project_root/src/xbox_usb_transport.h" "$build_dir/xbox_usb_transport.h"
@@ -134,6 +143,7 @@ compile() {
   command+="$wine_xdk\\bin\\win32\\cl.exe /nologo /c /O2 /GS- "
   command+="/D_XBOX /DNDEBUG /I$wine_build "
   command+="/DUSB_AUDIO360_DEBUG_API=$debug_api "
+  command+="/DUSB_AUDIO360_GUIDE_DIAGNOSTICS=$guide_diagnostics "
   command+="/I$wine_xdk\\include\\xbox "
   command+="/I$wine_xdk\\TechPreview\\Jul12Compiler\\include\\xbox "
   command+="/Fo$wine_build\\$output $wine_build\\$source"
@@ -142,6 +152,7 @@ compile() {
 
 compile driver.cpp driver.obj
 compile audio.cpp audio.obj
+compile guide_ui.cpp guide_ui.obj
 compile diagnostics.cpp diagnostics.obj
 compile xbox_usb_transport.cpp xbox_usb_transport.obj
 compile uac_descriptors.cpp uac_descriptors.obj
@@ -154,6 +165,7 @@ link_command+="/libpath:$wine_xdk\\lib\\xbox "
 link_command+="/map:$wine_build\\usb_audio360.map "
 link_command+="/out:$wine_build\\usb_audio360.pe "
 link_command+="$wine_build\\driver.obj $wine_build\\audio.obj "
+link_command+="$wine_build\\guide_ui.obj "
 link_command+="$wine_build\\diagnostics.obj "
 link_command+="$wine_build\\xbox_usb_transport.obj "
 link_command+="$wine_build\\uac_descriptors.obj $wine_build\\uac_clock.obj "

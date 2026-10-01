@@ -33,6 +33,7 @@ BOOL AudioInitialize(const AudioHostApi* api);
 VOID AudioTick(const AudioHostApi* api);
 VOID AudioDeviceRemoved();
 VOID AudioNotificationTick();
-BOOL AudioAdjustVolume(LONG delta_percent);
+BOOL AudioSetVolume(LONG percent);
+LONG AudioGetVolume();
 BOOL AudioMicrophoneAvailable();
 BOOL AudioSubmitMicrophonePacket(void* packet);
