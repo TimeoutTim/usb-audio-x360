@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "audio.h"
+#include "settings.h"
 #include "diagnostics.h"
 #include "guide_ui.h"
 #include "remote_volume.h"
@@ -677,6 +678,7 @@ extern "C" BOOL APIENTRY DllMain(HANDLE module, DWORD reason, LPVOID) {
   if (Resolve(kernel, 412, &pc_to_file_header))
     pc_to_file_header((PVOID)DiagnosticsInitialize, &loader_entry);
   DiagnosticsInitialize(loader_entry, version->build);
+  SettingsInitialize();
 
   if (!Resolve(kernel, 759, &g_get_device_descriptor) ||
       !Resolve(kernel, 740, &g_add_device_complete) ||
@@ -739,6 +741,7 @@ extern "C" BOOL APIENTRY DllMain(HANDLE module, DWORD reason, LPVOID) {
     }
   }
 
+  StartWorker(SettingsWorker, THREAD_PRIORITY_BELOW_NORMAL, false);
   if (!StartWorker((LPTHREAD_START_ROUTINE)AudioWorker,
                    THREAD_PRIORITY_ABOVE_NORMAL, false)) {
     g_add_detour.Remove();

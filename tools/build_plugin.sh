@@ -96,6 +96,10 @@ rm -f "$build_dir"/*.obj "$build_dir"/*.pe "$build_dir"/*.xex \
 cp "$project_root/src/driver.cpp" "$build_dir/driver.cpp"
 cp "$project_root/src/audio.cpp" "$build_dir/audio.cpp"
 cp "$project_root/src/audio.h" "$build_dir/audio.h"
+cp "$project_root/src/settings.cpp" "$build_dir/settings.cpp"
+cp "$project_root/src/settings.h" "$build_dir/settings.h"
+cp "$project_root/src/settings_ini.cpp" "$build_dir/settings_ini.cpp"
+cp "$project_root/src/settings_ini.h" "$build_dir/settings_ini.h"
 cp "$project_root/src/guide_ui.cpp" "$build_dir/guide_ui.cpp"
 cp "$project_root/src/guide_ui.h" "$build_dir/guide_ui.h"
 cp "$project_root/src/remote_volume.cpp" "$build_dir/remote_volume.cpp"
@@ -152,6 +156,8 @@ compile() {
 
 compile driver.cpp driver.obj
 compile audio.cpp audio.obj
+compile settings.cpp settings.obj
+compile settings_ini.cpp settings_ini.obj
 compile guide_ui.cpp guide_ui.obj
 compile remote_volume.cpp remote_volume.obj
 compile diagnostics.cpp diagnostics.obj
@@ -166,6 +172,7 @@ link_command+="/libpath:$wine_xdk\\lib\\xbox "
 link_command+="/map:$wine_build\\usb_audio360.map "
 link_command+="/out:$wine_build\\usb_audio360.pe "
 link_command+="$wine_build\\driver.obj $wine_build\\audio.obj "
+link_command+="$wine_build\\settings.obj $wine_build\\settings_ini.obj "
 link_command+="$wine_build\\guide_ui.obj "
 link_command+="$wine_build\\remote_volume.obj "
 link_command+="$wine_build\\diagnostics.obj "

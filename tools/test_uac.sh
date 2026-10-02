@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 project_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+(
+  settings_test=$(mktemp /tmp/usb-audio360-settings-test.XXXXXX)
+  trap 'rm -f "$settings_test"' EXIT
+  "${CXX:-clang++}" -std=c++98 -Wall -Wextra -Werror -pedantic \
+    -fsanitize=address,undefined -fno-omit-frame-pointer -g \
+    -I"$project_root/src" "$project_root/src/settings_ini.cpp" \
+    "$project_root/tests/settings_ini_test.cpp" -o "$settings_test"
+  "$settings_test"
+)
 test_dir=$(mktemp -d /tmp/usb-audio360-tests.XXXXXX)
 trap 'rm -f "$test_dir/uac_tests" "$test_dir/clock_tests" "$test_dir/setup_policy_tests" "$test_dir/cleanup_tests" "$test_dir/claim_tests" "$test_dir/ownership_tests" "$test_dir/isoch_tests" "$test_dir/budget_tests" "$test_dir/pacer_tests" "$test_dir/deadline_tests" "$test_dir/tone_tests" "$test_dir/pipeline_tests" "$test_dir/debug_tests" "$test_dir/mic_pcm_tests" "$test_dir/mic_gain_tests" "$test_dir/mic_packet_policy_tests" "$test_dir/guide_layout_tests" "$test_dir/mic_monitor_tests"; rmdir "$test_dir"' EXIT
 
