@@ -5,6 +5,7 @@
 #include "audio.h"
 #include "diagnostics.h"
 #include "guide_ui.h"
+#include "remote_volume.h"
 #include "device_claim_gate.h"
 #include "playback_profile.h"
 #include "uac_descriptors.h"
@@ -662,6 +663,7 @@ static bool StartWorker(LPTHREAD_START_ROUTINE entry, int priority,
 }  // namespace
 
 extern "C" BOOL APIENTRY DllMain(HANDLE module, DWORD reason, LPVOID) {
+  if (reason == DLL_PROCESS_DETACH) RemoteVolumeShutdown();
   if (reason != DLL_PROCESS_ATTACH) return TRUE;
 
   HANDLE kernel = GetModuleHandleA("xboxkrnl.exe");
@@ -745,5 +747,6 @@ extern "C" BOOL APIENTRY DllMain(HANDLE module, DWORD reason, LPVOID) {
   }
   StartWorker((LPTHREAD_START_ROUTINE)NotificationWorker,
               THREAD_PRIORITY_BELOW_NORMAL, true);
+  RemoteVolumeInitialize(kernel);
   return TRUE;
 }

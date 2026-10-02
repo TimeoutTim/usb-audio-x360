@@ -98,6 +98,9 @@ cp "$project_root/src/audio.cpp" "$build_dir/audio.cpp"
 cp "$project_root/src/audio.h" "$build_dir/audio.h"
 cp "$project_root/src/guide_ui.cpp" "$build_dir/guide_ui.cpp"
 cp "$project_root/src/guide_ui.h" "$build_dir/guide_ui.h"
+cp "$project_root/src/remote_volume.cpp" "$build_dir/remote_volume.cpp"
+cp "$project_root/src/remote_volume.h" "$build_dir/remote_volume.h"
+cp "$project_root/src/remote_volume_policy.h" "$build_dir/remote_volume_policy.h"
 cp "$project_root/src/guide_icons.h" "$build_dir/guide_icons.h"
 cp "$project_root/src/guide_layout.h" "$build_dir/guide_layout.h"
 cp "$project_root/src/diagnostics.cpp" "$build_dir/diagnostics.cpp"
@@ -150,6 +153,7 @@ compile() {
 compile driver.cpp driver.obj
 compile audio.cpp audio.obj
 compile guide_ui.cpp guide_ui.obj
+compile remote_volume.cpp remote_volume.obj
 compile diagnostics.cpp diagnostics.obj
 compile xbox_usb_transport.cpp xbox_usb_transport.obj
 compile uac_descriptors.cpp uac_descriptors.obj
@@ -163,6 +167,7 @@ link_command+="/map:$wine_build\\usb_audio360.map "
 link_command+="/out:$wine_build\\usb_audio360.pe "
 link_command+="$wine_build\\driver.obj $wine_build\\audio.obj "
 link_command+="$wine_build\\guide_ui.obj "
+link_command+="$wine_build\\remote_volume.obj "
 link_command+="$wine_build\\diagnostics.obj "
 link_command+="$wine_build\\xbox_usb_transport.obj "
 link_command+="$wine_build\\uac_descriptors.obj $wine_build\\uac_clock.obj "

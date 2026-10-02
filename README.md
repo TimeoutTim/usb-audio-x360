@@ -31,6 +31,16 @@ microphone level and mute, and microphone monitoring.
 
 ![Playback and Recording settings with volume sliders, mute controls, and a live microphone level meter](docs/img/usb-audio-settings.jpg)
 
+### Xbox 360 Media Remote
+
+The remote's **Volume Up/Down** buttons adjust USB playback volume in 5% steps.
+Hold a volume button to repeat; **Mute** toggles playback mute once per press.
+Volume buttons do not change the mute setting. These controls share the Guide's
+playback settings and do not affect microphone gain or mute.
+
+Tested with the white Xbox 360 Media Remote. Remotes programmed to send TV
+volume commands instead of Xbox commands may not work.
+
 ## Installation
 
 1. Download `usb_audio360.xex` from the latest GitHub release.
