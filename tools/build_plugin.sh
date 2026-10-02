@@ -19,7 +19,7 @@ if [[ "$debug_api" != 0 && "$debug_api" != 1 ]]; then
   echo "USB_AUDIO360_DEBUG_API must be 0 or 1" >&2
   exit 1
 fi
-if [[ "$debug_api" == 1 ]]; then output_dir="$output_dir/debug"; fi
+if [[ "$debug_api" == 1 ]]; then output_dir="$project_root/bin/debug"; fi
 
 mkdir -p "$runtime_root" "$build_dir" "$output_dir" "$build_dir/tmp"
 
@@ -96,6 +96,10 @@ rm -f "$build_dir"/*.obj "$build_dir"/*.pe "$build_dir"/*.xex \
 cp "$project_root/src/driver.cpp" "$build_dir/driver.cpp"
 cp "$project_root/src/audio.cpp" "$build_dir/audio.cpp"
 cp "$project_root/src/audio.h" "$build_dir/audio.h"
+cp "$project_root/src/guide_ui.cpp" "$build_dir/guide_ui.cpp"
+cp "$project_root/src/guide_ui.h" "$build_dir/guide_ui.h"
+cp "$project_root/src/guide_icons.h" "$build_dir/guide_icons.h"
+cp "$project_root/src/guide_layout.h" "$build_dir/guide_layout.h"
 cp "$project_root/src/diagnostics.cpp" "$build_dir/diagnostics.cpp"
 cp "$project_root/src/diagnostics.h" "$build_dir/diagnostics.h"
 cp "$project_root/src/xbox_usb_transport.h" "$build_dir/xbox_usb_transport.h"
@@ -118,6 +122,9 @@ cp "$project_root/src/playback_pacer.h" "$build_dir/playback_pacer.h"
 cp "$project_root/src/playback_profile.h" "$build_dir/playback_profile.h"
 cp "$project_root/src/capture_profile.h" "$build_dir/capture_profile.h"
 cp "$project_root/src/mic_pcm.h" "$build_dir/mic_pcm.h"
+cp "$project_root/src/mic_gain.h" "$build_dir/mic_gain.h"
+cp "$project_root/src/mic_test.h" "$build_dir/mic_test.h"
+cp "$project_root/src/usb_strings.h" "$build_dir/usb_strings.h"
 cp "$project_root/src/mic_packet_policy.h" "$build_dir/mic_packet_policy.h"
 cp "$project_root/src/debug_command.h" "$build_dir/debug_command.h"
 cp "$project_root/src/detour.cpp" "$build_dir/detour.cpp"
@@ -142,6 +149,7 @@ compile() {
 
 compile driver.cpp driver.obj
 compile audio.cpp audio.obj
+compile guide_ui.cpp guide_ui.obj
 compile diagnostics.cpp diagnostics.obj
 compile xbox_usb_transport.cpp xbox_usb_transport.obj
 compile uac_descriptors.cpp uac_descriptors.obj
@@ -154,6 +162,7 @@ link_command+="/libpath:$wine_xdk\\lib\\xbox "
 link_command+="/map:$wine_build\\usb_audio360.map "
 link_command+="/out:$wine_build\\usb_audio360.pe "
 link_command+="$wine_build\\driver.obj $wine_build\\audio.obj "
+link_command+="$wine_build\\guide_ui.obj "
 link_command+="$wine_build\\diagnostics.obj "
 link_command+="$wine_build\\xbox_usb_transport.obj "
 link_command+="$wine_build\\uac_descriptors.obj $wine_build\\uac_clock.obj "

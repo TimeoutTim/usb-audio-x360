@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <!-- Monochrome silhouette; the native Guide button visual supplies tint. -->
+  <path fill="#ffffff" d="M16 3.5a4.5 4.5 0 0 0-4.5 4.5v8a4.5 4.5 0 0 0 9 0V8A4.5 4.5 0 0 0 16 3.5Z"/>
+  <path fill="#ffffff" d="M8.5 14.5h2.5V16a5 5 0 0 0 10 0v-1.5h2.5V16a7.5 7.5 0 0 1-6.25 7.4V26h4.25v2.5h-11V26h4.25v-2.6A7.5 7.5 0 0 1 8.5 16v-1.5Z"/>
+</svg>
