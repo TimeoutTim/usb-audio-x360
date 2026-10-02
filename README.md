@@ -1,18 +1,50 @@
 # USB Audio 360
 
-USB Audio 360 is a DashLaunch plugin that adds USB audio output and microphone
-input to a modified Xbox 360. It is intended for consoles connected to
-computer monitors and other displays without speakers or a headphone output.
-A cheap USB audio adapter can provide headphone or powered-speaker audio
-without an HDMI audio extractor and separate headphone amplifier.
+USB Audio 360 adds USB headphone audio and microphone input to a modified
+Xbox 360, with controls built into the Xbox Guide. A cheap USB audio adapter
+lets you use a computer monitor or other display without speakers or a
+headphone socket—no HDMI audio extractor or separate headphone amplifier
+required.
 
 The plugin supports descriptor-selected USB Audio Class 1 (UAC1) and USB Audio
 Class 2 (UAC2) stereo output at 48 kHz. Compatible UAC1 microphone inputs can
 also be presented to games as a wireless headset assigned to player one.
 
-This is unofficial homebrew software. It requires a modified console, such as
-an RGH, JTAG, or BadAvatar system, and does not work on an unmodified retail
-Xbox 360.
+This unofficial DashLaunch plugin requires a modified console, such as RGH,
+JTAG, or BadAvatar. It does not work on an unmodified retail Xbox 360.
+Read the [warning and recovery instructions](#warning) before installing.
+
+## Audio controls in the Guide
+
+Open **Xbox Guide → Media → USB Audio**. The row sits between Windows Media
+Center and Select Music and appears when a supported USB audio device is
+connected. There are no gameplay button chords to remember or conflict with
+your game.
+
+![USB Audio integrated into the Xbox Guide's Media tab](docs/img/guide-usb-audio.jpg)
+
+The three icons control **volume**, **microphone mute**, and **settings**.
+Select volume and use Left/Right to adjust it in 5% steps. A or B returns to
+the icons; Up/Down accepts the volume and moves to the adjacent row.
+Left/Right stays on the slider at 0% and 100%.
+
+### Playback and recording
+
+The settings icon opens a native Guide page for output volume and mute,
+microphone level and mute, and microphone monitoring.
+
+![Playback and Recording settings with volume sliders, mute controls, and a live microphone level meter](docs/img/usb-audio-settings.jpg)
+
+Speak normally and use the live **Recording level** meter to set your
+microphone level. If it shows **Too high**, lower the level. Enable **Listen
+to microphone** to hear the result through your headphones.
+
+Use headphones at low volume when listening: speakers can cause feedback.
+Listening temporarily replaces USB game sound and stops when you leave the
+page. Volume and microphone level reset to 100% on restart.
+
+Screenshots show Aurora/Nova on kernel 17559. Unfamiliar Guide layouts are
+left unchanged; no additional UI files need to be installed.
 
 ## Installation
 
@@ -31,31 +63,6 @@ The console displays a notification after audio starts. Only one USB audio
 device is used at a time. To switch devices, disconnect the active device,
 wait briefly for cleanup to finish, and then connect the next device.
 
-Open **Xbox Guide → Media → USB Audio**, between Windows Media Center and
-Select Music. The row appears when a supported USB audio device is connected.
-
-- **Volume:** adjust with Left/Right in 5% steps. A or B returns to the icons;
-  Up/Down accepts the volume and moves to the adjacent row. Left/Right stays
-  on the slider at 0% and 100%.
-- **Microphone:** mute or unmute the microphone, when available.
-- **Settings:** open Playback and Recording controls, including output mute,
-  microphone level, a live recording-level meter, and **Listen to microphone**.
-  **Device properties** shows device and driver information for support.
-
-Use headphones at low volume when listening to the microphone: speakers can
-cause feedback. Listening temporarily replaces USB game sound and stops when
-you leave the page. Speak normally and lower the microphone level if the meter
-shows **Too high**. Volume and microphone level reset to 100% on restart.
-
-The former Back/D-pad gameplay shortcuts have been removed. Guide integration
-was tested with Aurora/Nova on kernel 17559; unfamiliar Guide layouts are left
-unchanged. No additional UI files need to be installed.
-
-If a device does not work, reproduce the problem once and shut down the
-console. Attach `usb_audio360.log`, found beside `usb_audio360.xex`, to a
-GitHub issue. The log contains USB descriptors and driver events, but no
-captured audio or USB serial-number strings.
-
 ## Tested hardware
 
 | Device | Class | USB ID | Connection | Tested features |
@@ -69,6 +76,20 @@ Compatibility is determined from each device's USB Audio descriptors, not
 from a device allowlist. Other devices may work, but not every UAC1 or UAC2
 format or topology is supported. Testing was performed on retail kernel
 `2.0.17559.0`.
+
+## Device information and troubleshooting
+
+Open **Settings → Device properties** from the USB Audio row to see the
+device name, USB ID, playback and recording formats, and driver status.
+This page is useful when checking compatibility or reporting a problem.
+
+![Device Properties showing USB device identity, audio formats, and driver status](docs/img/usb-audio-device-properties.jpg)
+
+If a device does not work, reproduce the problem once and shut down the
+console. Attach **`usb_audio360.log`**, found in the same folder as
+`usb_audio360.xex`, to a GitHub issue. A screenshot or photo of Device
+Properties is helpful too. The log contains USB descriptors and driver
+events, but no captured audio or USB serial-number strings.
 
 ## Warning
 
