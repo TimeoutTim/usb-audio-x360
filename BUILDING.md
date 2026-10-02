@@ -32,8 +32,9 @@ XEXTOOL=/path/to/xextool.exe \
 ```
 
 The script extracts the required XDK files into the configured runtime cache,
-compiles the PowerPC DLL, packages it with `imagexex`, applies XexTool, and
-writes `bin/usb_audio360.xex`.
+compiles the PowerPC DLL, packages it with `imagexex`, applies XexTool, and writes
+`bin/usb_audio360.xex`. The Guide controls use the system's native XUI runtime;
+no separate UI resource needs to be installed.
 
 ## Run portable tests
 

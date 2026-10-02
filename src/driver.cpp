@@ -4,6 +4,7 @@
 
 #include "audio.h"
 #include "diagnostics.h"
+#include "guide_ui.h"
 #include "device_claim_gate.h"
 #include "playback_profile.h"
 #include "uac_descriptors.h"
@@ -331,9 +332,8 @@ static void VoiceBindingTick() {
   }
 
   // This first implementation deliberately emulates a headset pinned to the
-  // first quadrant. A later input chord may change the requested player, but
-  // silently accepting XAM's fallback slot would associate voice with the
-  // wrong profile.
+  // first quadrant. Silently accepting XAM's fallback slot would associate
+  // voice with the wrong profile.
   if (requested_user != 0 ||
       XUserGetSigninState(0) == eXUserSigninState_NotSignedIn) {
     BYTE removed_user = 0xFF;
@@ -579,6 +579,15 @@ static int AddDeviceCompleteHook(DeviceHandle* handle, int status) {
   g_extension.interface_number = profile.interface_number;
   g_extension.interrupt_trb.flags = 1;
   handle->driver = &g_extension;
+  UsbDeviceDescriptor* device_descriptor = g_get_device_descriptor(handle);
+  // USB descriptors are little-endian; the PPC native WORD view is swapped.
+  const BYTE* device_bytes = (const BYTE*)device_descriptor;
+  g_audio_api.vendor_id = device_bytes ? device_bytes[8] | (device_bytes[9] << 8) : 0;
+  g_audio_api.product_id = device_bytes ? device_bytes[10] | (device_bytes[11] << 8) : 0;
+  g_audio_api.usb_version = device_bytes ? device_bytes[2] | (device_bytes[3] << 8) : 0;
+  g_audio_api.device_version = device_bytes ? device_bytes[12] | (device_bytes[13] << 8) : 0;
+  g_audio_api.manufacturer_index = device_bytes ? device_bytes[14] : 0;
+  g_audio_api.product_index = device_bytes ? device_bytes[15] : 0;
   g_audio_api.profile = profile;
   InterlockedExchange((volatile LONG*)&g_playback_handle, (LONG)handle);
   int result = g_add_detour.Original<AddDeviceCompleteFn>()(handle, 0);
@@ -626,30 +635,9 @@ static DWORD WINAPI AudioWorker(void*) {
   }
 }
 
-static void PollVolumeChord() {
-  static WORD previous_buttons[XUSER_MAX_COUNT] = {0};
-  for (DWORD user = 0; user < XUSER_MAX_COUNT; ++user) {
-    XINPUT_STATE state;
-    memset(&state, 0, sizeof(state));
-    if (XInputGetState(user, &state) != ERROR_SUCCESS) {
-      previous_buttons[user] = 0;
-      continue;
-    }
-
-    WORD buttons = state.Gamepad.wButtons;
-    WORD pressed = buttons & ~previous_buttons[user];
-    previous_buttons[user] = buttons;
-    if (!(buttons & XINPUT_GAMEPAD_BACK)) continue;
-
-    bool up = (pressed & XINPUT_GAMEPAD_DPAD_UP) != 0;
-    bool down = (pressed & XINPUT_GAMEPAD_DPAD_DOWN) != 0;
-    if (up != down) AudioAdjustVolume(up ? 5 : -5);
-  }
-}
-
 static DWORD WINAPI NotificationWorker(void*) {
   for (;;) {
-    PollVolumeChord();
+    GuideUiTick();
     AudioNotificationTick();
     VoiceBindingTick();
     DiagnosticsTick();

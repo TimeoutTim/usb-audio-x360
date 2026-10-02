@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "audio.h"
+#include <math.h>
 #include "diagnostics.h"
 #include "xbox_usb_transport.h"
 #include "isoch_result.h"
@@ -12,6 +13,9 @@
 #include "playback_profile.h"
 #include "capture_profile.h"
 #include "mic_pcm.h"
+#include "mic_gain.h"
+#include "mic_test.h"
+#include "usb_strings.h"
 #include "mic_packet_policy.h"
 #include "uac_clock.h"
 #include "uac_descriptors.h"
@@ -168,6 +172,35 @@ static volatile LONG g_notification_event = kNotificationNone;
 static volatile LONG g_notification_shown = 0;
 static volatile LONG g_diagnostic_streaming = 0;
 static volatile LONG g_volume_percent = 100;
+static volatile LONG g_output_muted = 0;
+static volatile LONG g_microphone_muted = 0;
+static volatile LONG g_microphone_gain_percent = 100;
+static usb_mic::LiveMonitor g_mic_test;
+static volatile LONG g_mic_test_lock = 0;
+static volatile LONG g_mic_test_command = 0;
+static volatile LONG g_mic_test_status = 0;
+static volatile LONG g_mic_test_peak = 0;
+static volatile LONG g_mic_peak_clipped = 0;
+static volatile LONG g_mic_peak_time = 0;
+static volatile LONG g_mic_test_heartbeat = 0;
+
+// Never wait for another callback. The short try-lock protects only test
+// indices and samples, not USB or game voice state. UI start resets indices;
+// recording and playback of samples are performed only by audio callbacks.
+static bool BeginMicTestAccess() {
+  if (InterlockedCompareExchange(&g_mic_test_lock, 1, 0)) return false;
+  LONG command = InterlockedExchange(&g_mic_test_command, 0);
+  DWORD now = GetTickCount();
+  if (command == 2 || !AudioMicrophoneAvailable() || AudioIsMicrophoneMuted() ||
+      now - (DWORD)InterlockedCompareExchange(&g_mic_test_heartbeat, 0, 0) > 1000)
+    g_mic_test.Stop();
+  return true;
+}
+
+static void EndMicTestAccess() {
+  InterlockedExchange(&g_mic_test_status, g_mic_test.phase());
+  InterlockedExchange(&g_mic_test_lock, 0);
+}
 static volatile LONG g_volume_feedback_pending = 0;
 static volatile LONG g_rearm_pending = 0;
 static volatile LONG g_mic_active = 0;
@@ -185,6 +218,12 @@ static uac::PlaybackPacer g_playback_pacer;
 static void* g_io_handle = 0;
 static uac::Format g_format;
 static uac::Format g_capture_format;
+// ResetDeviceState and SelectProfile run on the audio worker and are the
+// snapshot's only writers. Removal callbacks publish a separate atomic flag
+// so they cannot overlap a write and make an odd sequence appear even.
+static AudioDeviceInfo g_device_info;
+static volatile LONG g_device_info_sequence = 0;
+static volatile LONG g_device_info_removed = 0;
 static usb_mic::Decimator48To16 g_mic_decimator;
 static bool g_capture_supported = false;
 static uac::ClockSetup g_clock;
@@ -198,7 +237,10 @@ enum SetupStage { kHeader, kDescriptor, kConfiguration, kInactive,
                   kReadMute, kReadVolume, kVerifyInterface, kVerifyClock,
                   kVerifyMute, kVerifyVolume, kUac1FallbackInactive,
                   kUac1FallbackRate, kCaptureActive, kCaptureRate,
-                  kVerifyCapture };
+                  kVerifyCapture, kNameLanguage, kNameProduct, kNameManufacturer };
+static __declspec(align(128)) BYTE g_name_descriptor[256];
+static WORD g_name_language = 0;
+static bool g_names_started = false, g_names_abandoned = false;
 static BYTE g_read_feature_id = 0;
 static BYTE g_read_feature_controls = 0;
 static bool g_uac1_rate_programmed = false;
@@ -279,6 +321,11 @@ static volatile LONG g_voice_packet_sequence = 0;
 static volatile LONG g_voice_last_submit = 0;
 
 static void ResetDeviceState() {
+  AudioStopMicrophoneTest();
+  InterlockedExchange(&g_mic_test_peak, 0);
+  InterlockedExchange(&g_mic_peak_clipped, 0);
+  g_names_started = g_names_abandoned = false;
+  g_name_language = 0;
   DWORD marker = UsbAudioDiagnostic[63];
   DWORD rearm_attempts = UsbAudioDiagnostic[58];
   DWORD rearm_pending = UsbAudioDiagnostic[59];
@@ -301,6 +348,12 @@ static void ResetDeviceState() {
   memset(&g_profile, 0, sizeof(g_profile));
   memset(&g_format, 0, sizeof(g_format));
   memset(&g_capture_format, 0, sizeof(g_capture_format));
+  InterlockedIncrement(&g_device_info_sequence);
+  memset(&g_device_info, 0, sizeof(g_device_info));
+  InterlockedIncrement(&g_device_info_sequence);
+  // Transport re-arm has drained the previous device before this reset.
+  // Publish the empty snapshot before admitting information for a new device.
+  InterlockedExchange(&g_device_info_removed, 0);
   memset(&g_clock_request, 0, sizeof(g_clock_request));
   memset(&g_control, 0, sizeof(g_control));
   memset(g_isoch, 0, sizeof(g_isoch));
@@ -430,7 +483,30 @@ static void __cdecl RenderCaptureCallback(void*) {
   LONG write = g_pcm_write;
   LONG read = g_pcm_read;
   if ((DWORD)(write - read) > kPcmRingFrames - 256) return;
-  float gain = (float)g_volume_percent / 100.0f;
+  // Treat the UI value as a position on a 60 dB attenuation range.  A
+  // linear amplitude multiplier makes almost all of the perceived change
+  // happen in the lower half of the slider because hearing is logarithmic.
+  // Cache the conversion so powf only runs after the user changes volume,
+  // never once per callback or sample.
+  static LONG rendered_percent = -1;
+  static float rendered_gain = 1.0f;
+  LONG volume_percent = g_volume_percent;
+  if (volume_percent != rendered_percent) {
+    rendered_gain = volume_percent == 0
+        ? 0.0f
+        : powf(10.0f, ((float)volume_percent - 100.0f) * 0.03f);
+    rendered_percent = volume_percent;
+  }
+  float gain = g_output_muted ? 0.0f : rendered_gain;
+  SHORT test_samples[256];
+  bool test_playback = g_mic_test_status != 0;
+  if (test_playback) memset(test_samples, 0, sizeof(test_samples));
+  if (g_mic_test_status || g_mic_test_command) {
+    if (BeginMicTestAccess()) {
+      test_playback = g_mic_test.Playback(test_samples, 256);
+      EndMicTestAccess();
+    }
+  }
   if (InterlockedExchange(&g_volume_feedback_pending, 0)) {
     g_volume_feedback_remaining = kVolumeFeedbackSamples;
     g_volume_feedback_phase = 0;
@@ -439,7 +515,12 @@ static void __cdecl RenderCaptureCallback(void*) {
   for (int sample = 0; sample < 256; ++sample) {
     float left = g_render_frame.samples[sample] * gain;
     float right = g_render_frame.samples[256 + sample] * gain;
-    if (g_volume_feedback_remaining > 0) {
+    if (test_playback) {
+      // Isolate live monitoring in USB output only; HDMI and game voice stay
+      // unchanged. A busy monitor buffer emits silence, never unrelated audio.
+      left = right = ((float)test_samples[sample] / 32768.0f) * gain;
+    }
+    if (g_volume_feedback_remaining > 0 && !test_playback) {
       LONG elapsed = kVolumeFeedbackSamples - g_volume_feedback_remaining;
       float envelope = 1.0f;
       if (elapsed < 96) envelope = (float)elapsed / 96.0f;
@@ -625,6 +706,41 @@ static bool SelectProfile(DWORD received) {
     }
     UsbAudioDiagnostic[39] = (f.interface_number << 24) | (f.alternate << 16) |
                              (f.sample_bytes << 8) | f.valid_bits;
+    InterlockedIncrement(&g_device_info_sequence);
+    g_device_info.connected = TRUE;
+    g_device_info.vendor_id = g_api ? g_api->vendor_id : 0;
+    g_device_info.product_id = g_api ? g_api->product_id : 0;
+    g_device_info.audio_class_version = f.version;
+    g_device_info.playback_valid_bits = f.valid_bits;
+    g_device_info.capture_channels = g_capture_supported
+        ? g_capture_format.channels : 0;
+    g_device_info.capture_valid_bits = g_capture_supported
+        ? g_capture_format.valid_bits : 0;
+    g_device_info.microphone_available = g_capture_supported;
+    g_device_info.usb_version = g_api ? g_api->usb_version : 0;
+    g_device_info.device_version = g_api ? g_api->device_version : 0;
+    g_device_info.output_interface = f.interface_number;
+    g_device_info.output_alternate = f.alternate;
+    g_device_info.output_endpoint = f.data.address;
+    g_device_info.output_packet_bytes = f.data.max_packet_bytes;
+    g_device_info.feedback_endpoint = f.feedback.address;
+    g_device_info.clock_id = f.clock;
+    g_device_info.sync_type = (BYTE)f.sync;
+    g_device_info.capture_interface = g_capture_supported ? g_capture_format.interface_number : 0;
+    g_device_info.capture_alternate = g_capture_supported ? g_capture_format.alternate : 0;
+    g_device_info.capture_endpoint = g_capture_supported ? g_capture_format.data.address : 0;
+    for (size_t i = 0; i < count; ++i) {
+      if (formats[i].direction == uac::kPlayback) {
+        ++g_device_info.advertised_outputs;
+        if (formats[i].valid_bits > g_device_info.max_output_bits)
+          g_device_info.max_output_bits = formats[i].valid_bits;
+      } else {
+        ++g_device_info.advertised_inputs;
+        if (formats[i].valid_bits > g_device_info.max_input_bits)
+          g_device_info.max_input_bits = formats[i].valid_bits;
+      }
+    }
+    InterlockedIncrement(&g_device_info_sequence);
     DiagnosticsSelected(g_profile, g_format);
     return true;
   }
@@ -754,11 +870,28 @@ static LONG __cdecl IsochComplete(DWORD transfer, DWORD* statuses,
 }
 
 static void PushMicrophoneSamples(const SHORT* samples, unsigned count) {
+  usb_mic::PeakReading reading = usb_mic::MeasurePeak(samples, count,
+                                                     AudioGetMicrophoneGain());
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    LONG previous = InterlockedCompareExchange(&g_mic_test_peak, 0, 0);
+    if ((unsigned)previous >= reading.peak ||
+        InterlockedCompareExchange(&g_mic_test_peak, reading.peak, previous) == previous) break;
+  }
+  if (reading.clipped) InterlockedExchange(&g_mic_peak_clipped, 1);
+  InterlockedExchange(&g_mic_peak_time, (LONG)GetTickCount());
+  // The game's voice ring can be full when no title requests microphone
+  // packets. Testing must still receive USB capture independently.
+  if ((g_mic_test_status || g_mic_test_command) && BeginMicTestAccess()) {
+    g_mic_test.Record(samples, count, AudioGetMicrophoneGain());
+    EndMicTestAccess();
+  }
   LONG write = g_mic_write;
   LONG read = g_mic_read;
   if ((DWORD)(write - read) + count > kMicRingSamples) return;
+  LONG gain = g_microphone_gain_percent;
   for (unsigned i = 0; i < count; ++i)
-    g_mic_ring[(write + i) & (kMicRingSamples - 1)] = samples[i];
+    g_mic_ring[(write + i) & (kMicRingSamples - 1)] =
+        usb_mic::ApplyGain(samples[i], gain);
   InterlockedExchange(&g_mic_write, write + count);
 }
 
@@ -1309,6 +1442,46 @@ static void VerifyMute() {
   else VerifyVolume();
 }
 
+static bool IsNameStage() {
+  return g_setup_stage == kNameLanguage || g_setup_stage == kNameProduct ||
+      g_setup_stage == kNameManufacturer;
+}
+
+static void NamesDone(BYTE status) {
+  InterlockedIncrement(&g_device_info_sequence);
+  g_device_info.name_status = status;
+  InterlockedIncrement(&g_device_info_sequence);
+  g_setup_stage = kFinished;
+}
+
+static void RequestManufacturerName() {
+  if (g_api && g_api->manufacturer_index)
+    QueueControl(0x80, 6, 0x0300 | g_api->manufacturer_index,
+                 g_name_language, 255, g_name_descriptor, kNameManufacturer);
+  else NamesDone(1);
+}
+
+static void CompleteName(LONG status, DWORD received) {
+  if (g_names_abandoned) { NamesDone(2); return; }
+  if (g_setup_stage == kNameLanguage) {
+    g_name_language = status == 0
+        ? (WORD)usb_strings::Language(g_name_descriptor, received) : 0;
+    if (!g_name_language) { NamesDone(2); return; }
+    if (g_api && g_api->product_index)
+      QueueControl(0x80, 6, 0x0300 | g_api->product_index,
+                   g_name_language, 255, g_name_descriptor, kNameProduct);
+    else RequestManufacturerName();
+  } else {
+    InterlockedIncrement(&g_device_info_sequence);
+    WCHAR* destination = g_setup_stage == kNameProduct
+        ? g_device_info.product_name : g_device_info.manufacturer_name;
+    if (status == 0) usb_strings::Decode(g_name_descriptor, received, destination, 64);
+    InterlockedIncrement(&g_device_info_sequence);
+    if (g_setup_stage == kNameProduct) RequestManufacturerName();
+    else NamesDone(status == 0 ? 1 : 2);
+  }
+}
+
 static void SetupTick() {
   if (g_stopping) { g_clock.Cancel(); return; }
   if (g_control_pending && g_control_done) {
@@ -1318,6 +1491,9 @@ static void SetupTick() {
     InterlockedExchange(&g_control_done, 0);
     UsbAudioDiagnostic[35] = status;
     UsbAudioDiagnostic[36] = received;
+    // Optional strings accept valid short reads and stalls. They are queried
+    // only after playback is running and cannot make audio activation fail.
+    if (IsNameStage()) { CompleteName(status, received); return; }
     if (status != 0) {
       if (g_setup_stage == kVerifyCapture &&
           g_capture_format.version == 1) {
@@ -1515,6 +1691,16 @@ static void SetupTick() {
     DWORD now = GetTickCount();
     if (usb_transport::ControlExpired(g_control_issued, now, g_control_deadline,
                                       g_control_done != 0)) {
+      if (IsNameStage()) {
+        if (g_names_abandoned) return;
+        g_names_abandoned = true;
+        InterlockedIncrement(&g_device_info_sequence);
+        g_device_info.name_status = 2;
+        InterlockedIncrement(&g_device_info_sequence);
+        // Keep the pending TRB and its buffer alive until completion/removal.
+        // Do not cancel/reuse it or stop a healthy audio stream for a name.
+        return;
+      }
       UsbAudioControlDiagnostic[11] = now;
       UsbAudioControlDiagnostic[12] = now - g_control_issued;
       ++UsbAudioControlDiagnostic[14];
@@ -1722,8 +1908,10 @@ static void CompleteVoicePackets() {
     } else {
       SHORT* destination = (SHORT*)words[2];
       LONG read = g_mic_read;
+      const bool muted = g_microphone_muted != 0;
       for (DWORD i = 0; i < samples; ++i)
-        destination[i] = g_mic_ring[(read + i) & (kMicRingSamples - 1)];
+        destination[i] = muted ? 0 :
+            g_mic_ring[(read + i) & (kMicRingSamples - 1)];
       InterlockedExchange(&g_mic_read, read + samples);
       // Direction 1 is XHV's microphone-capture request. Its initial length
       // is expressed in bytes of the selected capture codec: format 1 is
@@ -1794,6 +1982,13 @@ VOID AudioTick(const AudioHostApi* api) {
   return;
 #else
   if (!g_last_handle || !g_streaming || g_stopping) return;
+  if (g_bridge_started && !g_names_started && !g_control_pending &&
+      g_setup_stage == kFinished) {
+    g_names_started = true;
+    if (g_api->product_index || g_api->manufacturer_index)
+      QueueControl(0x80, 6, 0x0300, 0, 255, g_name_descriptor, kNameLanguage);
+    else NamesDone(1);
+  }
   LONG available = g_pcm_write - g_pcm_read;
   if (!g_bridge_started) {
     if (available < kPcmTargetFrames) return;
@@ -1808,7 +2003,9 @@ VOID AudioTick(const AudioHostApi* api) {
 }
 
 VOID AudioDeviceRemoved() {
+  AudioStopMicrophoneTest();
   InterlockedExchange(&g_stopping, 1);
+  InterlockedExchange(&g_device_info_removed, 1);
   InterlockedExchange(&g_mic_active, 0);
   InterlockedExchange(&g_mic_healthy, 0);
   FailVoicePackets();
@@ -1843,29 +2040,117 @@ VOID AudioNotificationTick() {
     InterlockedExchange(&g_notification_shown, 1);
 }
 
-BOOL AudioAdjustVolume(LONG delta_percent) {
-  if (!g_streaming || g_stopping || !g_api || !g_api->playback_handle)
-    return FALSE;
+BOOL AudioSetVolume(LONG percent) {
+  // Volume is user state, not endpoint state. Allow adjustment while idle or
+  // disconnected, without dereferencing the audio worker's device context.
+  if (percent < 0) percent = 0;
+  if (percent > 100) percent = 100;
+  LONG previous = InterlockedExchange(&g_volume_percent, percent);
+  if (previous == percent) return FALSE;
+  InterlockedExchange(&g_volume_feedback_pending, 1);
+  return TRUE;
+}
 
-  LONG current = g_volume_percent;
-  for (;;) {
-    LONG next = current + delta_percent;
-    if (next < 0) next = 0;
-    if (next > 100) next = 100;
-    if (next == current) return FALSE;
-    LONG observed = InterlockedCompareExchange(&g_volume_percent,
-                                               next, current);
-    if (observed == current) {
-      InterlockedExchange(&g_volume_feedback_pending, 1);
+LONG AudioGetVolume() {
+  return InterlockedCompareExchange(&g_volume_percent, 0, 0);
+}
+
+VOID AudioSetOutputMuted(BOOL muted) {
+  LONG previous = InterlockedExchange(&g_output_muted, muted ? 1 : 0);
+  if (previous != (muted ? 1 : 0) && !muted)
+    InterlockedExchange(&g_volume_feedback_pending, 1);
+}
+
+BOOL AudioIsOutputMuted() {
+  return InterlockedCompareExchange(&g_output_muted, 0, 0) != 0;
+}
+
+VOID AudioSetMicrophoneMuted(BOOL muted) {
+  InterlockedExchange(&g_microphone_muted, muted ? 1 : 0);
+}
+
+BOOL AudioIsMicrophoneMuted() {
+  return InterlockedCompareExchange(&g_microphone_muted, 0, 0) != 0;
+}
+
+BOOL AudioSetMicrophoneGain(LONG percent) {
+  if (percent < 0) percent = 0;
+  if (percent > 200) percent = 200;
+  return InterlockedExchange(&g_microphone_gain_percent, percent) != percent;
+}
+
+LONG AudioGetMicrophoneGain() {
+  return InterlockedCompareExchange(&g_microphone_gain_percent, 0, 0);
+}
+
+BOOL AudioGetDeviceInfo(AudioDeviceInfo* info) {
+  if (!info) return FALSE;
+  for (int attempt = 0; attempt < 4; ++attempt) {
+    // Interlocked reads bracket the copy with compiler and PowerPC memory
+    // barriers. Plain volatile sequence loads do not order the struct reads.
+    LONG removed_before = InterlockedCompareExchange(&g_device_info_removed, 0, 0);
+    LONG before = InterlockedCompareExchange(&g_device_info_sequence, 0, 0);
+    if (before & 1) continue;
+    *info = g_device_info;
+    LONG after = InterlockedCompareExchange(&g_device_info_sequence, 0, 0);
+    LONG removed_after = InterlockedCompareExchange(&g_device_info_removed, 0, 0);
+    if (before == after && !(after & 1) && removed_before == removed_after) {
+      info->streaming = g_bridge_started && g_streaming && !g_stopping;
+      info->last_error = UsbAudioDiagnostic[38];
+      info->microphone_available = AudioMicrophoneAvailable();
+      if (removed_after) {
+        info->connected = FALSE;
+        info->microphone_available = FALSE;
+      }
       return TRUE;
     }
-    current = observed;
   }
+  memset(info, 0, sizeof(*info));
+  return FALSE;
 }
 
 BOOL AudioMicrophoneAvailable() {
-  return g_mic_active && g_mic_healthy && !g_stopping &&
-      g_api && g_api->playback_handle;
+  // Active is published when capture is queued, healthy after a valid USB
+  // completion. Removal and capture failure clear these flags; stopping is
+  // checked last so Guide/voice callers need no access to the USB context.
+  return InterlockedCompareExchange(&g_mic_active, 0, 0) &&
+      InterlockedCompareExchange(&g_mic_healthy, 0, 0) &&
+      !InterlockedCompareExchange(&g_stopping, 0, 0);
+}
+
+BOOL AudioStartMicrophoneTest() {
+  if (!AudioMicrophoneAvailable() || AudioIsMicrophoneMuted()) return FALSE;
+  if (InterlockedCompareExchange(&g_mic_test_lock, 1, 0)) return FALSE;
+  InterlockedExchange(&g_mic_test_command, 0);
+  AudioKeepMicrophoneTestAlive();
+  g_mic_test.Start();
+  EndMicTestAccess();
+  return TRUE;
+}
+
+VOID AudioStopMicrophoneTest() {
+  InterlockedExchange(&g_mic_test_command, 2);
+  InterlockedExchange(&g_mic_test_heartbeat, 0);
+}
+
+VOID AudioKeepMicrophoneTestAlive() {
+  InterlockedExchange(&g_mic_test_heartbeat, (LONG)GetTickCount());
+}
+
+LONG AudioGetMicrophoneTestStatus(LONG* peak) {
+  if (peak) *peak = InterlockedCompareExchange(&g_mic_test_peak, 0, 0);
+  return InterlockedCompareExchange(&g_mic_test_status, 0, 0);
+}
+
+VOID AudioGetMicrophonePeak(LONG* peak, BOOL* clipped) {
+  LONG level = InterlockedExchange(&g_mic_test_peak, 0);
+  BOOL clip = InterlockedExchange(&g_mic_peak_clipped, 0) != 0;
+  if (!AudioMicrophoneAvailable() ||
+      GetTickCount() - (DWORD)InterlockedCompareExchange(&g_mic_peak_time, 0, 0) > 250) {
+    level = 0; clip = FALSE;
+  }
+  if (peak) *peak = level;
+  if (clipped) *clipped = clip;
 }
 
 BOOL AudioSubmitMicrophonePacket(void* packet) {

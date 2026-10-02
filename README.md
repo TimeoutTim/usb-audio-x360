@@ -31,9 +31,25 @@ The console displays a notification after audio starts. Only one USB audio
 device is used at a time. To switch devices, disconnect the active device,
 wait briefly for cleanup to finish, and then connect the next device.
 
-Hold **Back** on a connected controller and press **D-pad Up** or
-**D-pad Down** to adjust USB output volume in 5% steps. Volume resets to 100%
-when the console restarts.
+Open **Xbox Guide → Media → USB Audio**, between Windows Media Center and
+Select Music. The row appears when a supported USB audio device is connected.
+
+- **Volume:** adjust with Left/Right in 5% steps. A or B returns to the icons;
+  Up/Down accepts the volume and moves to the adjacent row. Left/Right stays
+  on the slider at 0% and 100%.
+- **Microphone:** mute or unmute the microphone, when available.
+- **Settings:** open Playback and Recording controls, including output mute,
+  microphone level, a live recording-level meter, and **Listen to microphone**.
+  **Device properties** shows device and driver information for support.
+
+Use headphones at low volume when listening to the microphone: speakers can
+cause feedback. Listening temporarily replaces USB game sound and stops when
+you leave the page. Speak normally and lower the microphone level if the meter
+shows **Too high**. Volume and microphone level reset to 100% on restart.
+
+The former Back/D-pad gameplay shortcuts have been removed. Guide integration
+was tested with Aurora/Nova on kernel 17559; unfamiliar Guide layouts are left
+unchanged. No additional UI files need to be installed.
 
 If a device does not work, reproduce the problem once and shut down the
 console. Attach `usb_audio360.log`, found beside `usb_audio360.xex`, to a
