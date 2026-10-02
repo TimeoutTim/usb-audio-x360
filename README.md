@@ -18,15 +18,11 @@ Read the [warning and recovery instructions](#warning) before installing.
 
 Open **Xbox Guide → Media → USB Audio**. The row sits between Windows Media
 Center and Select Music and appears when a supported USB audio device is
-connected. There are no gameplay button chords to remember or conflict with
-your game.
+connected.
 
 ![USB Audio integrated into the Xbox Guide's Media tab](docs/img/guide-usb-audio.jpg)
 
 The three icons control **volume**, **microphone mute**, and **settings**.
-Select volume and use Left/Right to adjust it in 5% steps. A or B returns to
-the icons; Up/Down accepts the volume and moves to the adjacent row.
-Left/Right stays on the slider at 0% and 100%.
 
 ### Playback and recording
 
@@ -34,17 +30,6 @@ The settings icon opens a native Guide page for output volume and mute,
 microphone level and mute, and microphone monitoring.
 
 ![Playback and Recording settings with volume sliders, mute controls, and a live microphone level meter](docs/img/usb-audio-settings.jpg)
-
-Speak normally and use the live **Recording level** meter to set your
-microphone level. If it shows **Too high**, lower the level. Enable **Listen
-to microphone** to hear the result through your headphones.
-
-Use headphones at low volume when listening: speakers can cause feedback.
-Listening temporarily replaces USB game sound and stops when you leave the
-page. Volume and microphone level reset to 100% on restart.
-
-Screenshots show Aurora/Nova on kernel 17559. Unfamiliar Guide layouts are
-left unchanged; no additional UI files need to be installed.
 
 ## Installation
 
