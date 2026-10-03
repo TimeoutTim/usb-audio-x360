@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "audio.h"
+#include "settings.h"
 #include <math.h>
 #include "diagnostics.h"
 #include "xbox_usb_transport.h"
@@ -171,10 +172,6 @@ static volatile LONG g_bridge_started = 0;
 static volatile LONG g_notification_event = kNotificationNone;
 static volatile LONG g_notification_shown = 0;
 static volatile LONG g_diagnostic_streaming = 0;
-static volatile LONG g_volume_percent = 100;
-static volatile LONG g_output_muted = 0;
-static volatile LONG g_microphone_muted = 0;
-static volatile LONG g_microphone_gain_percent = 100;
 static usb_mic::LiveMonitor g_mic_test;
 static volatile LONG g_mic_test_lock = 0;
 static volatile LONG g_mic_test_command = 0;
@@ -490,14 +487,14 @@ static void __cdecl RenderCaptureCallback(void*) {
   // never once per callback or sample.
   static LONG rendered_percent = -1;
   static float rendered_gain = 1.0f;
-  LONG volume_percent = g_volume_percent;
+  LONG volume_percent = AudioGetVolume();
   if (volume_percent != rendered_percent) {
     rendered_gain = volume_percent == 0
         ? 0.0f
         : powf(10.0f, ((float)volume_percent - 100.0f) * 0.03f);
     rendered_percent = volume_percent;
   }
-  float gain = g_output_muted ? 0.0f : rendered_gain;
+  float gain = AudioIsOutputMuted() ? 0.0f : rendered_gain;
   SHORT test_samples[256];
   bool test_playback = g_mic_test_status != 0;
   if (test_playback) memset(test_samples, 0, sizeof(test_samples));
@@ -888,7 +885,7 @@ static void PushMicrophoneSamples(const SHORT* samples, unsigned count) {
   LONG write = g_mic_write;
   LONG read = g_mic_read;
   if ((DWORD)(write - read) + count > kMicRingSamples) return;
-  LONG gain = g_microphone_gain_percent;
+  LONG gain = AudioGetMicrophoneGain();
   for (unsigned i = 0; i < count; ++i)
     g_mic_ring[(write + i) & (kMicRingSamples - 1)] =
         usb_mic::ApplyGain(samples[i], gain);
@@ -1717,6 +1714,7 @@ static void SetupTick() {
 static void StartDevice() {
   UsbAudioDiagnostic[2] = 1;
   if (!g_api || !g_api->playback_handle || g_stopping) return;
+  SettingsSelectDevice(g_api->vendor_id, g_api->product_id);
   g_io_handle = g_api->playback_handle;
   g_profile = g_api->profile;
   memset(&g_control, 0, sizeof(g_control));
@@ -1908,7 +1906,7 @@ static void CompleteVoicePackets() {
     } else {
       SHORT* destination = (SHORT*)words[2];
       LONG read = g_mic_read;
-      const bool muted = g_microphone_muted != 0;
+      const bool muted = AudioIsMicrophoneMuted() != FALSE;
       for (DWORD i = 0; i < samples; ++i)
         destination[i] = muted ? 0 :
             g_mic_ring[(read + i) & (kMicRingSamples - 1)];
@@ -2045,42 +2043,40 @@ BOOL AudioSetVolume(LONG percent) {
   // disconnected, without dereferencing the audio worker's device context.
   if (percent < 0) percent = 0;
   if (percent > 100) percent = 100;
-  LONG previous = InterlockedExchange(&g_volume_percent, percent);
-  if (previous == percent) return FALSE;
+  if (!SettingsSet(audio_settings::Volume, percent)) return FALSE;
   InterlockedExchange(&g_volume_feedback_pending, 1);
   return TRUE;
 }
 
 LONG AudioGetVolume() {
-  return InterlockedCompareExchange(&g_volume_percent, 0, 0);
+  return SettingsGet(audio_settings::Volume);
 }
 
 VOID AudioSetOutputMuted(BOOL muted) {
-  LONG previous = InterlockedExchange(&g_output_muted, muted ? 1 : 0);
-  if (previous != (muted ? 1 : 0) && !muted)
+  if (SettingsSet(audio_settings::OutputMute, muted ? 1 : 0) && !muted)
     InterlockedExchange(&g_volume_feedback_pending, 1);
 }
 
 BOOL AudioIsOutputMuted() {
-  return InterlockedCompareExchange(&g_output_muted, 0, 0) != 0;
+  return SettingsGet(audio_settings::OutputMute) != 0;
 }
 
 VOID AudioSetMicrophoneMuted(BOOL muted) {
-  InterlockedExchange(&g_microphone_muted, muted ? 1 : 0);
+  SettingsSet(audio_settings::MicMute, muted ? 1 : 0);
 }
 
 BOOL AudioIsMicrophoneMuted() {
-  return InterlockedCompareExchange(&g_microphone_muted, 0, 0) != 0;
+  return SettingsGet(audio_settings::MicMute) != 0;
 }
 
 BOOL AudioSetMicrophoneGain(LONG percent) {
   if (percent < 0) percent = 0;
   if (percent > 200) percent = 200;
-  return InterlockedExchange(&g_microphone_gain_percent, percent) != percent;
+  return SettingsSet(audio_settings::MicGain, percent);
 }
 
 LONG AudioGetMicrophoneGain() {
-  return InterlockedCompareExchange(&g_microphone_gain_percent, 0, 0);
+  return SettingsGet(audio_settings::MicGain);
 }
 
 BOOL AudioGetDeviceInfo(AudioDeviceInfo* info) {

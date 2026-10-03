@@ -48,3 +48,4 @@ void DiagnosticsFailure(DWORD error, DWORD stage, DWORD request,
 void DiagnosticsStreaming();
 void DiagnosticsDisconnected();
 void DiagnosticsTick();
+bool DiagnosticsSettingsPath(char* output, DWORD capacity);

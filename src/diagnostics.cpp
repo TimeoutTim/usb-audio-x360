@@ -56,6 +56,7 @@ static volatile LONG g_dropped = 0;
 static char g_log_path[MAX_PATH];
 static char g_old_log_path[MAX_PATH];
 static bool g_initialized = false;
+static bool g_module_path_resolved = false;
 static const char kFallbackLogPath[] = "Usb:\\Plugins\\usb_audio360.log";
 static const char kDiagnosticDrive[] = "UsbAudio360:";
 static const char kDiagnosticLink[] = "\\System??\\UsbAudio360:";
@@ -323,6 +324,7 @@ void DiagnosticsInitialize(HANDLE module, WORD kernel_build) {
           if (strlen(resolved) + sizeof(log_name) <= sizeof(resolved)) {
             strcat(resolved, log_name);
             SetLogPath(resolved);
+            g_module_path_resolved = true;
           }
         }
       }
@@ -330,6 +332,16 @@ void DiagnosticsInitialize(HANDLE module, WORD kernel_build) {
   }
   DWORD values[2] = {kDiagnosticSchema, kernel_build};
   Queue(kEventStartup, values, 2, 0, 0);
+}
+
+bool DiagnosticsSettingsPath(char* output, DWORD capacity) {
+  if (!output || !g_module_path_resolved) return false;
+  size_t length = strlen(g_log_path);
+  // .ini has the same length as .log; reserve suffix room for .bak/.tmp.
+  if (length < 4 || length + 5 > capacity) return false;
+  memcpy(output, g_log_path, length + 1);
+  strcpy(output + length - 4, ".ini");
+  return true;
 }
 
 void DiagnosticsObserveDevice(const UsbAudioDeviceObservation& o) {

@@ -58,6 +58,38 @@ The console displays a notification after audio starts. Only one USB audio
 device is used at a time. To switch devices, disconnect the active device,
 wait briefly for cleanup to finish, and then connect the next device.
 
+## Remembered device settings
+
+Playback volume, microphone gain, and both mute settings are remembered per
+USB vendor/product ID in `usb_audio360.ini`, beside the plugin. Two devices
+with the same IDs share settings. Device names are included as comments:
+
+```ini
+; SPACETOUCH USB Audio
+[0666:0880]
+volume=65
+microphone_gain=100
+output_muted=0
+microphone_muted=0
+```
+
+Volume accepts 0–100, microphone gain 0–200, and mute values 0 or 1. Edit the
+file while the console is off. Previously unseen devices use 100% playback
+volume and microphone gain, with both mute settings off.
+
+Saving happens in the background after two seconds without changes, at most
+once every ten seconds. Failed writes retry after thirty seconds. Leave a
+little time before switching off: the latest adjustments may not have been
+saved. Up to 64 device models are remembered; extra devices still work without
+persistent settings.
+
+A `.bak` file retains the previous saved configuration. An unreadable or
+invalid configuration is not overwritten; a valid backup is used where
+possible. Fix or move aside the invalid file to resume saving. Missing or
+unavailable storage never blocks audio. If the initial file read is still
+pending when a device starts, its current session settings are used; reconnect
+after storage becomes available to restore saved levels.
+
 ## Tested hardware
 
 | Device | Class | USB ID | Connection | Tested features |
