@@ -198,6 +198,15 @@ bool Candidate(const Byte* b, size_t total, size_t begin, size_t end,
         f->endpoint_layout_supported = false;
     }
   }
+  // Some UAC1 DACs omit the feedback usage bits. An IN endpoint is still
+  // unambiguously feedback when the asynchronous OUT endpoint links to it.
+  if (f->version == 1 && output_count == 1 && output_sync == kAsynchronous &&
+      output_sync_address && input_count == 1 && !feedback_count &&
+      input_endpoint.address == output_sync_address) {
+    f->feedback = input_endpoint;
+    input_count = 0;
+    feedback_count = 1;
+  }
   if (!general || !format || !pcm || !f->terminal ||
       (output_count == input_count))
     return false;

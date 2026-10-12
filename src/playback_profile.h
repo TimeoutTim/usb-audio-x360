@@ -22,7 +22,8 @@ inline bool SupportedFullSpeedPlayback(const Format& f) {
       f.data.max_packet_bytes < generated || f.data.max_packet_bytes > 1023)
     return false;
   return !f.feedback.address ||
-      (f.feedback.interval == 1 && f.feedback.transactions == 1);
+    (f.feedback.interval >= 1 && f.feedback.interval <= 16 &&
+     f.feedback.transactions == 1);
 }
 
 // Prefer playback on the interface that caused the claim. Some composite UAC

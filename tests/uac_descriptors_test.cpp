@@ -121,6 +121,26 @@ static Bytes Momentum3() {
   return b;
 }
 
+static Bytes FiioK3Uac1() {
+  Bytes b;
+  APPEND(b, 9,2,0x80,0,2,1,0,0x80,0,
+         9,4,0,0,0,1,1,0,0,
+         9,0x24,1,0,1,0x28,0,1,1,
+         12,0x24,2,1,1,1,0,2,3,0,0x10,0x0b,
+         10,0x24,6,0x0a,1,1,0,3,3,0,
+         9,0x24,3,6,1,3,0,0x0a,0,
+         9,4,1,0,0,1,2,0,0,
+         9,4,1,1,2,1,2,0,4,
+         7,0x24,1,1,1,1,0,
+         20,0x24,2,1,2,2,16,4,0x44,0xac,0,0x80,0xbb,0,
+         0x88,0x58,1,0,0x77,1,
+         9,5,1,5,0x84,1,1,0,0x81,
+         7,0x25,1,1,2,0,0,
+         9,5,0x81,1,3,0,1,4,0);
+  Finish(b);
+  return b;
+}
+
 int main() {
   uac::Format formats[8];
   Bytes v1 = Header(false);
@@ -190,6 +210,25 @@ int main() {
   assert(formats[0].endpoint_rate_control && formats[0].supports_48000);
   assert(formats[0].fixed_48000);
   assert(uac::SupportedFullSpeedPlayback(formats[0]));
+
+  // The K3 links its async OUT endpoint to an IN feedback endpoint whose
+  // usage bits are unset and whose advertised polling interval is four.
+  Bytes fiio_k3 = FiioK3Uac1();
+  assert(fiio_k3.size() == 128);
+  assert(Parse(fiio_k3, formats) == 1);
+  assert(formats[0].direction == uac::kPlayback);
+  assert(formats[0].sync == uac::kAsynchronous);
+  assert(formats[0].data.address == 1 &&
+      formats[0].data.max_packet_bytes == 388);
+  assert(formats[0].feedback.address == 0x81 &&
+      formats[0].feedback.max_packet_bytes == 3 &&
+      formats[0].feedback.interval == 4);
+  assert(formats[0].supports_48000);
+  assert(uac::SupportedFullSpeedPlayback(formats[0]));
+  fiio_k3[111] = 0x82;  // Do not infer an unlinked endpoint as feedback.
+  assert(Parse(fiio_k3, formats) == 1);
+  assert(!formats[0].endpoint_layout_supported);
+  assert(!uac::SupportedFullSpeedPlayback(formats[0]));
 
   // Continuous UAC1 rate range, followed by a range excluding 48 kHz.
   Bytes continuous = v1;

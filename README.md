@@ -98,6 +98,7 @@ after storage becomes available to restore saved levels.
 | Apple AirPods Max USB Audio | UAC2 | `05ac:110c` | USB-A-to-USB-C cable | Output |
 | [SPACETOUCH USB Audio](https://www.amazon.com.au/dp/B0GT9K55KX) | UAC1 | `0666:0880` | USB-A | Output and Microphone |
 | Sennheiser MOMENTUM 3 Wireless | UAC1 | `1377:6004` | USB-A-to-USB-C cable | Output |
+| FiiO K3 | UAC1 (Must be set to Class 1.0 mode) | `7229:4700` | USB-A-to-USB-C cable | Output |
 
 Compatibility is determined from each device's USB Audio descriptors, not
 from a device allowlist. Other devices may work, but not every UAC1 or UAC2

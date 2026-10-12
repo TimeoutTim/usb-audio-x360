@@ -1262,7 +1262,8 @@ static void EndpointOpenTick() {
       UsbAudioDiagnostic[55] = 5;  // Before opening feedback IN.
       status = UsbTransportOpen(
           g_io_handle, g_profile.feedback_endpoint_address,
-          g_profile.feedback_endpoint_packet_size, 1, (DWORD*)&g_feedback_isoch[0]);
+          g_profile.feedback_endpoint_packet_size, g_format.feedback.interval,
+          (DWORD*)&g_feedback_isoch[0]);
       UsbAudioDiagnostic[12] = status;
       if (status < 0) { SetupFailed(status); return; }
     }

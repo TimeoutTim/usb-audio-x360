@@ -1,13 +1,14 @@
 # Building USB Audio 360
 
 The repository does not contain Microsoft's proprietary Xbox 360 XDK or
-XexTool.
+XexTool. The Windows build uses an installed XDK directly; the Linux build
+uses Wine.
 
 ## Requirements
 
-- Linux with Wine (the build can also be adapted to run on Windows)
+- Windows with Xbox 360 SDK 21256.3, or Linux with Wine
 - Xbox 360 XDK 21256.3
-- XexTool v6
+- XexTool v6 for packaged-XEX flag validation
 - GCC and Clang C++ compilers for the portable tests
 - Python 3, 7-Zip, Xvfb, and Xauth
 
@@ -22,8 +23,18 @@ Wine and the proprietary tools must be installed separately.
 
 ## Build the plugin
 
-Place the XDK installer and XexTool beside the repository, or provide their
-paths explicitly:
+On Windows, install Xbox 360 SDK 21256.3 and run:
+
+```powershell
+.\tools\build_plugin.ps1
+```
+
+The script detects the default SDK path under `Program Files (x86)`. Set
+`XDK_ROOT` to override it. Set `XEXTOOL` to the XexTool v6 executable to enable
+packaged-XEX flag validation; compilation and packaging still work without it.
+
+On Linux, place the XDK installer and XexTool beside the repository, or provide
+their paths explicitly:
 
 ```bash
 XDK_INSTALLER=/path/to/XBOX360-SDK-21256.3.exe \
