@@ -16,6 +16,7 @@
 #include "mic_pcm.h"
 #include "mic_gain.h"
 #include "mic_test.h"
+#include "surround_downmix.h"
 #include "usb_strings.h"
 #include "mic_packet_policy.h"
 #include "uac_clock.h"
@@ -260,6 +261,11 @@ static volatile LONG g_debug_result = 0; // 0=none, 1=accepted, 2=started, -1=re
 static volatile LONG g_debug_run = 0;
 static bool g_debug_silent = false;
 static bool g_debug_controls = false;
+// Per-channel render peaks (0..65535, 65535 = full scale) measured before
+// the ring-space early return so debug builds report even while stage 5
+// waits. Published via mailbox words 13-15 in DebugMailboxTick.
+static volatile LONG g_render_peak[6];
+static DWORD g_render_peak_window = 0;
 #endif
 static bool SubmitBoundedSlot(unsigned direction, int slot);
 static bool SubmitContinuousSlot(unsigned direction, int slot);
@@ -471,11 +477,37 @@ static bool FillUsbPacket(int slot) {
   return true;
 }
 
+#if USB_AUDIO360_DEBUG_API
+// Measure per-channel render peaks into the mailbox diagnostics. Runs in the
+// MEC render callback (real-time path) but only does six short scans and
+// interlocked max-updates; the 1 s window reset happens in DebugMailboxTick.
+static void MeasureRenderPeaks() {
+  for (int channel = 0; channel < usb_mix::kRenderChannels; ++channel) {
+    unsigned peak = usb_mix::ChannelPeak16(
+        &g_render_frame.samples[channel * usb_mix::kRenderStride],
+        usb_mix::kRenderStride);
+    volatile LONG* slot = &g_render_peak[channel];
+    LONG previous = *slot;
+    while ((LONG)peak > previous) {
+      LONG seen = InterlockedCompareExchange(slot, (LONG)peak, previous);
+      if (seen == previous) break;
+      previous = seen;
+    }
+  }
+}
+#endif
+
 static void __cdecl RenderCaptureCallback(void*) {
   void* handle = g_mec_handle;
   CaptureRenderFrameFn capture = g_capture_render_frame;
   if (!handle || !capture || capture(handle, g_render_frame.samples) < 0)
     return;
+
+#if USB_AUDIO360_DEBUG_API
+  // Measure before the ring-space early return so debug builds still report
+  // render activity even while stage 5 waits and the ring stays full.
+  MeasureRenderPeaks();
+#endif
 
   LONG write = g_pcm_write;
   LONG read = g_pcm_read;
@@ -510,8 +542,13 @@ static void __cdecl RenderCaptureCallback(void*) {
   }
 
   for (int sample = 0; sample < 256; ++sample) {
-    float left = g_render_frame.samples[sample] * gain;
-    float right = g_render_frame.samples[256 + sample] * gain;
+    // Downmix the 6-channel MEC render frame (L,R,C,LFE,Ls,Rs) to stereo
+    // so games that put dialogue in the center channel (e.g. FFXIII) are
+    // audible on a stereo USB headset. Identity for stereo-only content.
+    float left, right;
+    usb_mix::FoldFrame(g_render_frame.samples, (unsigned)sample, &left, &right);
+    left *= gain;
+    right *= gain;
     if (test_playback) {
       // Isolate live monitoring in USB output only; HDMI and game voice stay
       // unchanged. A busy monitor buffer emits silence, never unrelated audio.
@@ -1820,6 +1857,20 @@ static void DebugMailboxTick() {
   UsbAudioDebugMailbox[5] = (DWORD)g_debug_result;
   UsbAudioDebugMailbox[6] = (DWORD)g_debug_run;
   UsbAudioDebugMailbox[7] = (DWORD)g_stopping;
+  // Publish per-channel render peaks on a ~1 s window. Word 13 = L|R,
+  // word 14 = C|LFE, word 15 = Ls|Rs (each half-word 0..65535, 65535 =
+  // full scale). Peaks are reset here after every publish so the next
+  // window starts fresh.
+  DWORD now = GetTickCount();
+  if (now - g_render_peak_window >= 1000) {
+    DWORD peaks[6];
+    for (int i = 0; i < 6; ++i)
+      peaks[i] = (DWORD)InterlockedExchange(&g_render_peak[i], 0);
+    g_render_peak_window = now;
+    UsbAudioDebugMailbox[13] = (peaks[1] << 16) | (peaks[0] & 0xFFFF);
+    UsbAudioDebugMailbox[14] = (peaks[3] << 16) | (peaks[2] & 0xFFFF);
+    UsbAudioDebugMailbox[15] = (peaks[5] << 16) | (peaks[4] & 0xFFFF);
+  }
 }
 
 static void DebugInitialize() {
@@ -1846,6 +1897,12 @@ BOOL AudioInitialize(const AudioHostApi* api) {
   if (!api) return FALSE;
 #if USB_AUDIO360_TEST_STAGE == 0
   if (!StartRenderCapture()) return FALSE;
+#elif USB_AUDIO360_DEBUG_API
+  // Debug builds (stage 5) do not stream game audio to USB, but they still
+  // need the MEC render capture running so RenderCaptureCallback can measure
+  // per-channel peaks for the debug API's render_peaks diagnostics. Best
+  // effort: a failure here is not fatal to the debug mailbox smoke tests.
+  StartRenderCapture();
 #endif
   g_api = api;
 #if USB_AUDIO360_DEBUG_API

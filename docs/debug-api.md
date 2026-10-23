@@ -61,7 +61,7 @@ explicit-feedback profile, not a complete generic UAC1/UAC2 test harness.
 | 5 | Result: 0 none, 1 accepted, 2 dispatched, 0xffffffff rejected |
 | 6..7 | Test run counter, permanent stopped flag |
 | 8..12 | Pointers to main/control/tone/activation/setup-trace diagnostics |
-| 13..15 | Reserved |
+| 13..15 | Per-channel render peaks: L\|R, C\|LFE, Ls\|Rs (each half 0..65535, 65535 = full scale; ~1 s window) |
 
 Only word 3 is client-writable. Encode `0xa5000000 | (command << 16) | duration`.
 Commands: 3 controls, 4 tone, 5 silence, 6 stop. Controls/stop require duration
@@ -75,6 +75,44 @@ matching completion accounting, not audible sound. `verified=1` means
 activation readbacks finished. Volume is raw hexadecimal signed 8.8 dB.
 `result` describes the latest mutating command, not streaming success.
 The setup trace retains the first 32 requests per attachment, without wrapping.
+
+## Render peaks (5.1 channel verification)
+
+Debug builds start the MEC render capture best-effort so the callback can
+measure per-channel peaks even while stage 5 waits without streaming game
+audio to USB. `status` reports them as `render_peaks` (keys `L`, `R`, `C`,
+`LFE`, `Ls`, `Rs`, each 0..65535 where 65535 = full scale, ~1 s window).
+
+The downmix in `src/surround_downmix.h` assumes WAVE/SMPTE planar order
+(L, R, C, LFE, Ls, Rs). Verify this on hardware before trusting the fold:
+
+1. Flash a debug build, launch a game with clear center-channel dialogue
+   (e.g. Final Fantasy XIII) so C carries speech.
+2. `python3 tools/usb_audio_debug.py CONSOLE_HOST status` repeatedly, or
+   `python3 tools/usb_audio_debug.py CONSOLE_HOST watch` for one line per
+   second until Ctrl+C.
+   Expect `C` (and `L`/`R` from music/effects) to rise above zero; `LFE`
+   may stay near zero depending on the title.
+3. For ground truth on all six channels, play the bundled 48 s test file
+   from a USB stick in the dashboard while `watch` records:
+   `tools/channel_test.m4a` for the Music player, `tools/channel_test.mp4`
+   for the Video player. It activates one channel at a time for 8 s in
+   file channel order FL, FR, FC, LFE, BL, BR, so exactly one key must
+   light up per window in the sequence `L`, `R`, `C`, `LFE`, `Ls`, `Rs`.
+   The LFE window reads far lower than the others because the system LFE
+   lowpass attenuates the 440 Hz tone. If only `L`/`R` light up, the
+   dashboard player downmixed to stereo and the file cannot verify the
+   mapping.
+4. If peaks land on the wrong keys, the MEC channel order differs from the
+   assumption — adjust the fold indices/gains in `surround_downmix.h`,
+   rebuild, and re-verify. Do not ship the downmix until the mapping is
+   confirmed.
+5. Once verified, flash the release build for actual listening: it applies
+   the same always-on BS.775 downmix (identity for stereo-only content)
+   so center-channel dialogue becomes audible on a stereo USB headset.
+
+Debug builds measure peaks but do not stream game audio to USB, so listen
+checks must use the release build.
 
 ## Safety and validation
 

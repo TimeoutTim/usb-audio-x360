@@ -5,8 +5,13 @@ XexTool.
 
 ## Requirements
 
-- Linux with Wine (the build can also be adapted to run on Windows)
-- Xbox 360 XDK 21256.3
+- Xbox 360 XDK 21256.3 (not redistributed with this repository)
+
+The plugin builds either on Linux under Wine or natively on Windows.
+
+### Linux
+
+- Linux with Wine
 - XexTool v6
 - GCC and Clang C++ compilers for the portable tests
 - Python 3, 7-Zip, Xvfb, and Xauth
@@ -20,7 +25,18 @@ sudo apt install -y build-essential clang python3 p7zip-full xvfb xauth
 
 Wine and the proprietary tools must be installed separately.
 
+### Windows
+
+- Windows with PowerShell 5.1 or later
+- An installed XDK (default path:
+  `C:\Program Files (x86)\Microsoft Xbox 360 SDK`)
+
+No Wine, Xvfb, 7-Zip extraction, or XexTool is needed — the installed XDK
+tools run natively.
+
 ## Build the plugin
+
+### Linux
 
 Place the XDK installer and XexTool beside the repository, or provide their
 paths explicitly:
@@ -35,6 +51,44 @@ The script extracts the required XDK files into the configured runtime cache,
 compiles the PowerPC DLL, packages it with `imagexex`, applies XexTool, and writes
 `bin/usb_audio360.xex`. The Guide controls use the system's native XUI runtime;
 no separate UI resource needs to be installed.
+
+### Windows
+
+From the repository root:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_plugin.ps1
+```
+
+The script copies the sources and `src/xex.xml` into a build directory
+(`%TEMP%\usb-audio360-build\build` by default), compiles all translation
+units with the XDK PowerPC `cl.exe`, links the PowerPC DLL against
+`xapilib.lib`, `xboxkrnl.lib`, and `libcMT.lib`, packages the result with
+`imagexex` (compressed, flash, sysdll — see `src/xex.xml`), and writes
+`bin\usb_audio360.xex` plus its SHA-256.
+
+Expected result: a warning-free build apart from C4325 in `detour.h`
+(section attributes on `.text` are ignored by the PowerPC compiler —
+harmless and identical to the Linux build).
+
+| Parameter   | Default                              | Purpose                                      |
+|-------------|--------------------------------------|----------------------------------------------|
+| `-XdkPath`  | `C:\Program Files (x86)\Microsoft Xbox 360 SDK` | XDK installation directory          |
+| `-BuildDir` | `%TEMP%\usb-audio360-build\build`    | Intermediate object/PE/XEX directory         |
+| `-DebugApi` | `0`                                  | `1` enables the debug API (`bin\debug\`)     |
+
+Example with a custom XDK location and debug API:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_plugin.ps1 `
+  -XdkPath 'D:\XDK' -DebugApi 1
+```
+
+Differences from the Linux build: no XexTool post-check (the Linux script
+verifies the XEX flags with `xextool -l`; on Windows the flags are set via
+`src/xex.xml` during `imagexex` — install XexTool separately to verify them
+manually), and no XDK extraction (the installer's CAB payload is only
+unpacked on Linux when the XDK is not installed).
 
 ## Run portable tests
 

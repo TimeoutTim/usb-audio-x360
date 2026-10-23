@@ -55,12 +55,17 @@ class Monitor:
 
 def locate(monitor, manifest, module):
     matches = []
+    loaded = []
     for line in monitor.command("modules"):
         fields = dict(re.findall(r'(\w+)=("[^"]*"|\S+)', line))
-        if fields.get("name", "").strip('"').lower() == module.lower():
+        name = fields.get("name", "").strip('"')
+        if name:
+            loaded.append(name)
+        if name.lower() == module.lower():
             matches.append(fields)
     if len(matches) != 1:
-        raise RuntimeError("Expected exactly one loaded target module")
+        raise RuntimeError("Expected exactly one loaded target module %r; loaded: %s"
+                           % (module, ", ".join(loaded) or "<none>"))
     fields = matches[0]
     for key, field in (("checksum", "check"), ("timestamp", "timestamp")):
         if int(fields[field], 16) != manifest[key]:
@@ -93,13 +98,37 @@ def status(monitor, addresses):
     main = monitor.words(addresses["UsbAudioDiagnostic"], 64)
     tone = monitor.words(addresses["UsbAudioToneDiagnostic"], 16)
     activation = monitor.words(addresses["UsbAudioActivationDiagnostic"], 16)
+
+    def halves(word):
+        return [word & 0xFFFF, word >> 16]
+
+    # Per-channel render peaks (0..65535 each, 65535 = full scale) packed
+    # into mailbox words 13..15 as L|R, C|LFE, Ls|Rs. Zero before the first
+    # 1 s publish window simply reads as no activity yet.
     return dict(run=box[6], ack=box[4], result=box[5], pending=box[3], stopped=box[7],
                 stage=main[32], error=hex(main[38]), complete=main[59],
                 out=[main[15], main[4]], feedback=[main[13], main[5]],
                 missed=[main[8], main[9]], errors=[main[10], main[14]],
                 verified=activation[0], alternate=activation[2], hz=activation[5],
                 mute=activation[7], volume_raw=hex(activation[9]),
-                nonzero_frames=tone[7], peak=tone[8])
+                nonzero_frames=tone[7], peak=tone[8],
+                render_peaks=dict(zip(("L", "R", "C", "LFE", "Ls", "Rs"),
+                                      halves(box[13]) + halves(box[14]) + halves(box[15]))))
+
+
+def watch_line(now, peaks):
+    return "%s %s" % (now, " ".join("%s=%d" % (key, peaks[key])
+                                    for key in ("L", "R", "C", "LFE", "Ls", "Rs")))
+
+
+def watch(monitor, manifest, module, interval=1.0):
+    if interval <= 0:
+        raise ValueError("Interval must be positive")
+    addresses, _ = locate(monitor, manifest, module)
+    while True:
+        print(watch_line(time.strftime("%H:%M:%S"),
+                         status(monitor, addresses)["render_peaks"]), flush=True)
+        time.sleep(interval)
 
 
 def execute(monitor, manifest, module, command, duration=2000, row=0):
@@ -140,18 +169,24 @@ def execute(monitor, manifest, module, command, duration=2000, row=0):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("host")
-    parser.add_argument("command", choices=("status", "results", "controls", "tone", "silence", "stop", "trace"))
+    parser.add_argument("command", choices=("status", "results", "controls", "tone", "silence", "stop", "trace", "watch"))
     parser.add_argument("--module", default="usb_audio360.xex")
     parser.add_argument("--manifest", type=Path, default=Path(__file__).resolve().parents[1] / "bin/debug/usb_audio360.json")
     parser.add_argument("--port", type=int, default=730)
     parser.add_argument("--duration", type=int, default=2000)
     parser.add_argument("--row", type=int, default=0)
+    parser.add_argument("--interval", type=float, default=1.0)
     args = parser.parse_args()
     monitor = None
     try:
         manifest = json.loads(args.manifest.read_text())
         monitor = Monitor(args.host, args.port)
-        print(json.dumps(execute(monitor, manifest, args.module, args.command, args.duration, args.row), indent=2))
+        if args.command == "watch":
+            watch(monitor, manifest, args.module, args.interval)
+        else:
+            print(json.dumps(execute(monitor, manifest, args.module, args.command, args.duration, args.row), indent=2))
+    except KeyboardInterrupt:
+        print()
     except (OSError, ValueError, KeyError, RuntimeError) as error:
         parser.exit(1, str(error) + "\n")
     finally:

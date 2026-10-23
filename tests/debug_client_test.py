@@ -47,6 +47,22 @@ class Tests(unittest.TestCase):
         client.execute(fake, MANIFEST, "usb_audio360.xex", "status")
         self.assertFalse(fake.writes)
 
+    def test_render_peaks(self):
+        fake = Fake()
+        # Packed as L|R, C|LFE, Ls|Rs in words 13..15 (low half = first name).
+        fake.box[13] = (0x1234 << 16) | 0x5678  # L=0x5678, R=0x1234
+        fake.box[14] = (0xBBBB << 16) | 0xAAAA  # C=0xAAAA, LFE=0xBBBB
+        fake.box[15] = (0xDDDD << 16) | 0xCCCC  # Ls=0xCCCC, Rs=0xDDDD
+        result = client.execute(fake, MANIFEST, "usb_audio360.xex", "status")
+        self.assertEqual(result["render_peaks"],
+                         {"L": 0x5678, "R": 0x1234, "C": 0xAAAA, "LFE": 0xBBBB,
+                          "Ls": 0xCCCC, "Rs": 0xDDDD})
+        self.assertFalse(fake.writes)
+
+    def test_watch_line(self):
+        line = client.watch_line("12:34:56", {"L": 1, "R": 2, "C": 3, "LFE": 4, "Ls": 5, "Rs": 6})
+        self.assertEqual(line, "12:34:56 L=1 R=2 C=3 LFE=4 Ls=5 Rs=6")
+
     def test_command(self):
         fake = Fake()
         self.assertEqual(client.execute(fake, MANIFEST, "usb_audio360.xex", "tone", 5000)["ack"], 1)

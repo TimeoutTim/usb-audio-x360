@@ -11,13 +11,19 @@ project_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
   "$settings_test"
 )
 test_dir=$(mktemp -d /tmp/usb-audio360-tests.XXXXXX)
-trap 'rm -f "$test_dir/uac_tests" "$test_dir/clock_tests" "$test_dir/setup_policy_tests" "$test_dir/cleanup_tests" "$test_dir/claim_tests" "$test_dir/ownership_tests" "$test_dir/isoch_tests" "$test_dir/budget_tests" "$test_dir/pacer_tests" "$test_dir/deadline_tests" "$test_dir/tone_tests" "$test_dir/pipeline_tests" "$test_dir/debug_tests" "$test_dir/mic_pcm_tests" "$test_dir/mic_gain_tests" "$test_dir/mic_packet_policy_tests" "$test_dir/guide_layout_tests" "$test_dir/mic_monitor_tests"; rmdir "$test_dir"' EXIT
+trap 'rm -f "$test_dir/uac_tests" "$test_dir/clock_tests" "$test_dir/setup_policy_tests" "$test_dir/cleanup_tests" "$test_dir/claim_tests" "$test_dir/ownership_tests" "$test_dir/isoch_tests" "$test_dir/budget_tests" "$test_dir/pacer_tests" "$test_dir/deadline_tests" "$test_dir/tone_tests" "$test_dir/pipeline_tests" "$test_dir/debug_tests" "$test_dir/mic_pcm_tests" "$test_dir/mic_gain_tests" "$test_dir/mic_packet_policy_tests" "$test_dir/guide_layout_tests" "$test_dir/mic_monitor_tests" "$test_dir/surround_downmix_tests"; rmdir "$test_dir"' EXIT
 
 g++ -std=c++98 -Wall -Wextra -Werror -pedantic \
   -I"$project_root/src" "$project_root/tests/mic_gain_test.cpp" \
   -o "$test_dir/mic_gain_tests"
 "$test_dir/mic_gain_tests"
 rm -f "$test_dir/mic_gain_tests"
+
+g++ -std=c++98 -Wall -Wextra -Werror -pedantic \
+  -I"$project_root/src" "$project_root/tests/surround_downmix_test.cpp" \
+  -o "$test_dir/surround_downmix_tests"
+"$test_dir/surround_downmix_tests"
+rm -f "$test_dir/surround_downmix_tests"
 
 g++ -std=c++11 -Wall -Wextra -Werror \
   -I"$project_root/src" "$project_root/tests/mic_pcm_test.cpp" \
